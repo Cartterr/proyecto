@@ -10,5 +10,15 @@ export default defineConfig({
     emptyOutDir: true,
   },
   publicDir: 'public', // ✅ aquí Vite copiará confirm.html y otros archivos estáticos
-  server: { port: 5173 },
+  server: {
+    port: 5173,
+    ...(process.env.VITE_NETLIFY_FUNCTIONS_PROXY ? {
+      proxy: {
+        '/.netlify/functions': {
+          target: process.env.VITE_NETLIFY_FUNCTIONS_PROXY,
+          changeOrigin: true,
+        },
+      },
+    } : {}),
+  },
 })

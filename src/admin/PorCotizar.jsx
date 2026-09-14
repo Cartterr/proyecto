@@ -1,458 +1,221 @@
-import React, { useEffect, useState, useRef } from 'react'
-import { ADMIN_PASSWORD, CONVERTAPI_SECRET, DEFAULTS_REPISA, C, apiFetch, fmtDate, fmt, styles } from './utils.js'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { C, apiFetch, fmt, fmtDate, styles } from './utils.js'
+import { completedVisitSnapshot, measurementPayload, miniErpQuoteRecord, restoredQuoteState } from './quoteIntegration.js'
 
-function SelectOrFree({ options, value, onChange, step = 0.01 }) {
-  const [libre, setLibre] = useState(() => !options.includes(Number(value)))
-  const strOptions = options.map(String)
-  function handleSelect(e) {
-    if (e.target.value === '__libre__') { setLibre(true) }
-    else { setLibre(false); onChange(parseFloat(e.target.value)) }
-  }
-  const sel = {
-    padding: '7px 6px', border: '1.5px solid ' + C.border, borderRadius: 7,
-    fontSize: 13, width: '100%', fontFamily: 'inherit', background: '#FAFAFA', outline: 'none',
-  }
-  if (!libre) return (
-    <select value={strOptions.includes(String(value)) ? String(value) : '__libre__'} onChange={handleSelect} style={sel}>
-      {options.map(o => <option key={o} value={o}>{o}</option>)}
-      <option value="__libre__">Otro...</option>
-    </select>
-  )
-  return (
-    <div style={{ display: 'flex', gap: 4 }}>
-      <input type="number" value={value} step={step}
-        onChange={e => onChange(parseFloat(e.target.value) || 0)}
-        style={{ ...sel, width: '70%' }} autoFocus />
-      <button type="button" onClick={() => setLibre(false)}
-        style={{ fontSize: 11, padding: '0 6px', border: '1.5px solid ' + C.border, borderRadius: 7, background: C.bg, cursor: 'pointer', color: C.textSub, whiteSpace: 'nowrap' }}>
-        Lista
-      </button>
-    </div>
-  )
+const emptyMeasurements = {
+  projectName: '', wallACm: '', wallBAndECm: '', wallCCm: 0, wallDCm: 0,
+  roomHeightCm: '', shape: 'single-wall', wallSelection: 'A', depthCm: '',
+}
+const DEMO_QUOTES_KEY = 'dm_demo_3d_quotes'
+const FUNCTIONS_BASE_URL = (import.meta.env.VITE_FUNCTIONS_BASE_URL || '').replace(/\/$/, '')
+
+const demoVisit = {
+  id: 'visit-demo-local-001', status: 'realizada', nombre: 'Cliente de Prueba',
+  email: 'cliente@example.test', celular: '+56 9 0000 0000',
+  direccion: 'Direccion de Prueba 123', comuna: 'Comuna de Prueba',
+  start: '2026-09-08T10:00:00-03:00',
+  measurements: {
+    projectName: 'Cotizacion local de prueba', wallACm: 240, wallBAndECm: 200,
+    wallCCm: 80, wallDCm: 80, roomHeightCm: 250,
+    shape: 'single-wall', wallSelection: 'A', depthCm: 48,
+  },
 }
 
-const STORAGE_KEY = 'dm_cotizador_state'
-const COT_NUM_KEY = 'dm_cot_num'
-function loadState() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') } catch { return null } }
-function saveState(state) { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)) }
-function getCotNum() { return parseInt(localStorage.getItem(COT_NUM_KEY) || '1421') }
-function setCotNumStorage(n) { localStorage.setItem(COT_NUM_KEY, String(n)) }
+function fieldStyle(extra = {}) {
+  return { ...styles.input, padding: '8px 10px', fontSize: 13, boxSizing: 'border-box', ...extra }
+}
+
+function EmbedConfigurator({ session, project, onProject }) {
+  const frameRef = useRef(null)
+  const projectRef = useRef(project)
+  projectRef.current = project
+  const embedOrigin = useMemo(() => new URL(session.embedBaseUrl).origin, [session.embedBaseUrl])
+  const source = useMemo(() => {
+    const url = new URL(session.embed.path, session.embedBaseUrl)
+    url.searchParams.set('mode', 'editor')
+    url.searchParams.set('parentOrigin', window.location.origin)
+    url.searchParams.set('protocolVersion', session.embed.protocolVersion || '1')
+    return url.toString()
+  }, [session])
+
+  function sendProject() {
+    frameRef.current?.contentWindow?.postMessage({
+      type: 'repisas:load-project', version: session.embed.protocolVersion || '1',
+      requestId: crypto.randomUUID(), payload: { project: projectRef.current },
+    }, embedOrigin)
+  }
+
+  useEffect(() => {
+    function receive(event) {
+      if (event.origin !== embedOrigin || event.source !== frameRef.current?.contentWindow) return
+      const message = event.data
+      if (message?.version !== (session.embed.protocolVersion || '1')) return
+      if (message.type === 'repisas:ready') sendProject()
+      if ((message.type === 'repisas:project-loaded' || message.type === 'repisas:project-changed') && message.payload?.project) onProject(message.payload.project)
+    }
+    window.addEventListener('message', receive)
+    return () => window.removeEventListener('message', receive)
+  }, [embedOrigin, session.embed.protocolVersion, onProject])
+
+  return <iframe ref={frameRef} src={source} onLoad={sendProject} title="Configurador Repisas 3D"
+    style={{ width: '100%', minHeight: 580, border: '1px solid ' + C.border, borderRadius: 10, background: 'white' }} />
+}
 
 export default function PorCotizarSection({ statuses, visitaSeleccionada, allVisits, onVisitCotizada }) {
-  const realizadas = allVisits.filter(v => statuses[v.id] === 'realizada')
-  const saved = loadState()
+  const demoEnabled = import.meta.env.DEV && new URLSearchParams(window.location.search).get('demo') === '1'
+  const realizadas = useMemo(() => {
+    const source = allVisits.filter(v => statuses[v.id] === 'realizada' || v.status === 'realizada')
+    return demoEnabled && !source.some(v => v.id === demoVisit.id) ? [demoVisit, ...source] : source
+  }, [allVisits, statuses, demoEnabled])
+  const [selectedVisit, setSelectedVisit] = useState(visitaSeleccionada || null)
+  const [comuna, setComuna] = useState(visitaSeleccionada?.comuna || '')
+  const [measurements, setMeasurements] = useState({ ...emptyMeasurements, ...(visitaSeleccionada?.measurements || {}) })
+  const [session, setSession] = useState(null)
+  const [project, setProject] = useState(null)
+  const [catalog, setCatalog] = useState(null)
+  const [serviceQty, setServiceQty] = useState({})
+  const [calculation, setCalculation] = useState(null)
+  const [savedQuote, setSavedQuote] = useState(null)
+  const [quoteId, setQuoteId] = useState(null)
+  const [busy, setBusy] = useState('')
+  const [error, setError] = useState('')
 
-  const [mode, setMode]                   = useState(saved?.mode || 'visita')
-  const [selectedVisit, setSelectedVisit] = useState(null)
-  const [manualCliente, setManualCliente] = useState(saved?.manualCliente || { nombre: '', email: '', celular: '', direccion: '' })
-  const [cotNum, setCotNum]               = useState(getCotNum)
-  const [repisas, setRepisas]             = useState(saved?.repisas || [{ ...DEFAULTS_REPISA, id: Date.now() }])
-  const [adNombres, setAdNombres]         = useState(saved?.adNombres || {
-    retiro_orden: 'Retiro y orden de articulos',
-    retiro_basura: 'Retiro de basura',
-    cajas: 'Cajas organizadoras',
-    bici: 'Soporte bicicleta / ski',
-  })
-  const [adicionales, setAdicionales]     = useState(saved?.adicionales || {
-    qty_retiro_orden: 0,  precio_retiro_orden: 40000,
-    qty_retiro_basura: 0, precio_retiro_basura: 30000,
-    qty_cajas: 0,         precio_cajas: 15000,
-    qty_bici: 0,          precio_bici: 20000,
-  })
-  const [generating, setGenerating] = useState(false)
-  const [pdfUrl, setPdfUrl]         = useState(null)
-  const [pdfBlob, setPdfBlob]       = useState(null)
-  const [totalInfo, setTotalInfo]   = useState(saved?.totalInfo || { subtotal: 0, iva: 0, total: 0 })
-  const [autoSaved, setAutoSaved]   = useState(false)
-  const [error, setError]           = useState('')
-  const [editingNombre, setEditingNombre] = useState(null)
+  useEffect(() => { if (visitaSeleccionada) selectVisit(visitaSeleccionada) }, [visitaSeleccionada])
 
-  useEffect(() => {
-    if (visitaSeleccionada) { setMode('visita'); setSelectedVisit(visitaSeleccionada) }
-  }, [visitaSeleccionada])
-
-  useEffect(() => {
-    saveState({ mode, manualCliente, repisas, adNombres, adicionales, totalInfo })
-  }, [mode, manualCliente, repisas, adNombres, adicionales, totalInfo])
-
-  function resetCotizador() {
-    const newNum = getCotNum()
-    setMode('visita')
-    setManualCliente({ nombre: '', email: '', celular: '', direccion: '' })
-    setCotNum(newNum)
-    setRepisas([{ ...DEFAULTS_REPISA, id: Date.now() }])
-    setAdNombres({ retiro_orden: 'Retiro y orden de articulos', retiro_basura: 'Retiro de basura', cajas: 'Cajas organizadoras', bici: 'Soporte bicicleta / ski' })
-    setAdicionales({ qty_retiro_orden: 0, precio_retiro_orden: 40000, qty_retiro_basura: 0, precio_retiro_basura: 30000, qty_cajas: 0, precio_cajas: 15000, qty_bici: 0, precio_bici: 20000 })
-    setTotalInfo({ subtotal: 0, iva: 0, total: 0 })
-    setPdfUrl(null); setPdfBlob(null); setAutoSaved(false); setError('')
-    setSelectedVisit(null); saveState({})
+  function selectVisit(visit) {
+    setSelectedVisit(visit); setComuna(visit.comuna || '')
+    setMeasurements({ ...emptyMeasurements, projectName: `Cotizacion ${visit.nombre || ''}`.trim(), ...(visit.measurements || {}) })
+    setSession(null); setProject(null); setCatalog(null); setCalculation(null); setSavedQuote(null); setQuoteId(null); setError('')
   }
 
-  function calcTotales() {
-    const totRep = repisas.reduce((s, r) => s + (r.u || 0) * (r.v || 0), 0)
-    const totAd  = ['retiro_orden','retiro_basura','cajas','bici']
-      .reduce((s, k) => s + (adicionales['qty_' + k] || 0) * (adicionales['precio_' + k] || 0), 0)
-    const subtotal = totRep + totAd
-    const iva = Math.round(subtotal * 0.19)
-    return { subtotal, iva, total: subtotal + iva }
+  function services() {
+    return Object.entries(serviceQty).filter(([, quantity]) => Number(quantity) > 0)
+      .map(([catalogItemId, quantity]) => ({ catalogItemId, quantity: Number(quantity) }))
   }
 
-  const totales = calcTotales()
-
-  function addRepisa() {
-    if (repisas.length >= 4) return
-    setRepisas(prev => [...prev, { ...DEFAULTS_REPISA, id: Date.now() }])
+  async function callIntegration(body) {
+    const data = await apiFetch(`${FUNCTIONS_BASE_URL}/.netlify/functions/repisas-3d-quote`, { method: 'POST', body: JSON.stringify(body) })
+    if (!data.ok) throw new Error(data.error || 'Fallo la integracion con Repisas 3D')
+    return data
   }
-  function updRep(id, field, val) {
-    setRepisas(prev => prev.map(r => r.id === id ? { ...r, [field]: parseFloat(String(val).replace(',', '.')) || 0 } : r))
-  }
-  function removeRepisa(id) { setRepisas(prev => prev.filter(r => r.id !== id)) }
 
-  const cliente = mode === 'visita' ? (selectedVisit || {}) : manualCliente
-
-  async function handleGenerar() {
-    if (mode === 'visita' && !selectedVisit) return
-    if (mode === 'manual' && !manualCliente.nombre.trim()) return setError('Ingresa el nombre del cliente')
-    setGenerating(true); setError(''); setPdfUrl(null); setAutoSaved(false)
-
-    const t = calcTotales()
-    setTotalInfo(t)
-
-    const payload = {
-      cot_num:   cotNum,
-      nombre:    (cliente.nombre || '').toUpperCase(),
-      direccion: (cliente.direccion || '').toUpperCase(),
-      rut: '',
-      telefono:  cliente.celular || cliente.telefono || '',
-      email:     (cliente.email || '').toUpperCase(),
-      repisas:   repisas.map(r => ({ largo: r.l, prof: r.p, alto: r.a, niveles: r.n, unidades: r.u, valor: r.v })),
-      ...adicionales,
-    }
-
+  async function startConfigurator() {
+    setBusy('session'); setError(''); setSavedQuote(null)
     try {
-      const res = await fetch('/.netlify/functions/generate-quote', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-admin-password': ADMIN_PASSWORD },
-        body: JSON.stringify(payload),
-      })
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || 'HTTP ' + res.status) }
-
-      const finalTotals = {
-        subtotal: parseInt(res.headers.get('x-subtotal') || '0'),
-        iva:      parseInt(res.headers.get('x-iva')      || '0'),
-        total:    parseInt(res.headers.get('x-total')    || '0'),
-      }
-      setTotalInfo(finalTotals)
-
-      const xlsxBlob = await res.blob()
-      const formData = new FormData()
-      formData.append('File', xlsxBlob, 'cotizacion.xlsx')
-      const convertRes  = await fetch('https://v2.convertapi.com/convert/xlsx/to/pdf?Secret=' + CONVERTAPI_SECRET, { method: 'POST', body: formData })
-      const convertData = await convertRes.json()
-      if (!convertRes.ok || !convertData.Files) throw new Error('ConvertAPI: ' + (convertData.Message || 'Error'))
-
-      const fi = convertData.Files[0]
-      let blob
-      if (fi.FileData) {
-        const bin = atob(fi.FileData)
-        const bytes = new Uint8Array(bin.length)
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-        blob = new Blob([bytes], { type: 'application/pdf' })
-      } else {
-        blob = await fetch(fi.Url).then(r => r.blob())
-      }
-
-      setPdfBlob(blob); setPdfUrl(URL.createObjectURL(blob))
-
-      const next = cotNum + 1; setCotNum(next); setCotNumStorage(next)
-
-      // Subir PDF a Drive
-      let uploadedPdfUrl = ''
-      try {
-        const pdfBase64ToUpload = fi.FileData || await blob.arrayBuffer().then(buf =>
-          btoa(String.fromCharCode(...new Uint8Array(buf)))
-        )
-        const nombreInicial = (cliente.nombre || 'cliente').split(' ')
-          .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
-        const pdfFileName = 'Cotizacion ' + nombreInicial + ' - Repisas Don Maxi.pdf'
-        const uploadRes = await apiFetch('/.netlify/functions/upload-pdf', {
-          method: 'POST',
-          body: JSON.stringify({ pdfBase64: pdfBase64ToUpload, fileName: pdfFileName, cotNum }),
-        })
-        if (uploadRes.ok) uploadedPdfUrl = uploadRes.viewUrl || ''
-      } catch (e) { console.warn('upload-pdf error:', e.message) }
-
-      // Guardar cotizacion
-      await apiFetch('/.netlify/functions/save-quote', {
-        method: 'POST',
-        body: JSON.stringify({
-          cotNum,
-          nombre:      cliente.nombre || '',
-          email:       cliente.email || '',
-          telefono:    cliente.celular || cliente.telefono || '',
-          direccion:   cliente.direccion || '',
-          fechaVisita: mode === 'visita' ? (selectedVisit?.start || '') : '',
-          subtotal:    finalTotals.subtotal,
-          iva:         finalTotals.iva,
-          total:       finalTotals.total,
-          notas: '', status: 'por confirmar',
-          repisas:     repisas.map(r => ({ largo: r.l, prof: r.p, alto: r.a, niveles: r.n, unidades: r.u, valor: r.v })),
-          adicionales,
-          pdfUrl:      uploadedPdfUrl,
-        }),
-      })
-
-      // Si vino de visita, marcarla como realizada_cotizada
-      if (mode === 'visita' && selectedVisit) {
-        try {
-          await apiFetch('/.netlify/functions/update-visit-status', {
-            method: 'POST',
-            body: JSON.stringify({
-              visitId:   selectedVisit.id,
-              nombre:    selectedVisit.nombre,
-              fecha:     fmtDate(selectedVisit.start),
-              hora:      '',
-              email:     selectedVisit.email || '',
-              celular:   selectedVisit.celular || '',
-              direccion: selectedVisit.direccion || '',
-              status:    'realizada_cotizada',
-              notas:     selectedVisit.notas || '',
-            }),
-          })
-          onVisitCotizada?.(selectedVisit.id, 'realizada_cotizada')
-        } catch (e) { console.warn('No se pudo actualizar estado de visita:', e.message) }
-      }
-
-      setAutoSaved(true)
+      const visit = completedVisitSnapshot(selectedVisit, comuna)
+      const normalizedMeasurements = measurementPayload(measurements)
+      const data = await callIntegration({ action: 'session', visit, measurements: normalizedMeasurements })
+      setSession(data); setProject(data.project); setCatalog(data.catalog)
     } catch (e) { setError(e.message) }
-    finally { setGenerating(false) }
+    finally { setBusy('') }
   }
 
-  function handleDescargar() {
-    if (!pdfBlob) return
-    const a = document.createElement('a')
-    a.href = pdfUrl
-    a.download = 'Cotizacion ' + (cliente.nombre || 'cliente') + ' - Repisas Don Maxi.pdf'
-    a.click()
+  useEffect(() => {
+    if (!project || !catalog) return
+    const timer = setTimeout(async () => {
+      try {
+        const data = await callIntegration({ action: 'calculate', project, serviceSelections: services() })
+        setCalculation({ lines: data.lines, totals: data.totals }); setError('')
+      } catch (e) { setCalculation(null); setError(e.message) }
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [project, catalog, serviceQty])
+
+  async function saveQuote() {
+    if (!project || !calculation) return
+    setBusy('save'); setError('')
+    try {
+      const visit = completedVisitSnapshot(selectedVisit, comuna)
+      const data = await callIntegration({ action: 'save', quoteId, visit, project, serviceSelections: services(), status: 'draft' })
+      const quote = data.quote
+      setSavedQuote(quote); setQuoteId(quote.quoteId)
+      const mirror = miniErpQuoteRecord(quote)
+      mirror.fechaVisita = selectedVisit?.start || ''
+      if (demoEnabled && selectedVisit.id === demoVisit.id) {
+        const existing = JSON.parse(localStorage.getItem(DEMO_QUOTES_KEY) || '[]')
+        localStorage.setItem(DEMO_QUOTES_KEY, JSON.stringify([mirror, ...existing.filter(item => item.cotNum !== mirror.cotNum)]))
+      } else {
+        const stored = await apiFetch('/.netlify/functions/save-quote', { method: 'POST', body: JSON.stringify(mirror) })
+        if (!stored.ok) throw new Error(stored.error || 'La cotizacion 3D se guardo, pero no pudo asociarse al mini ERP')
+        const visitUpdate = await apiFetch('/.netlify/functions/update-visit-status', {
+          method: 'POST', body: JSON.stringify({
+            visitId: selectedVisit.id, nombre: selectedVisit.nombre, fecha: fmtDate(selectedVisit.start), hora: '',
+            email: selectedVisit.email || '', celular: selectedVisit.celular || '', direccion: selectedVisit.direccion || '',
+            status: 'realizada_cotizada', notas: selectedVisit.notas || '',
+          }),
+        })
+        if (!visitUpdate.ok) throw new Error(visitUpdate.error || 'La cotizacion se guardo, pero no se pudo actualizar la visita')
+      }
+      onVisitCotizada?.(selectedVisit.id, 'realizada_cotizada')
+    } catch (e) { setError(e.message) }
+    finally { setBusy('') }
   }
 
-  const inputStyle = {
-    padding: '7px 6px', border: '1.5px solid ' + C.border, borderRadius: 7,
-    fontSize: 13, textAlign: 'center', width: '100%', fontFamily: 'inherit',
-    background: '#FAFAFA', outline: 'none',
+  async function reopenSaved() {
+    if (!savedQuote) return
+    setBusy('reopen'); setError('')
+    try {
+      const data = await callIntegration({ action: 'reopen', quoteId: savedQuote.quoteId, version: savedQuote.version })
+      const restored = restoredQuoteState(data.quote, data.catalog)
+      setSavedQuote(data.quote); setQuoteId(restored.quoteId); setProject(restored.project)
+      setCatalog(restored.catalog); setServiceQty(restored.serviceQty); setCalculation(restored.calculation)
+    } catch (e) { setError(e.message) }
+    finally { setBusy('') }
   }
 
-  return (
-    <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
-        <h2 style={styles.sectionTitle}>Cotizar</h2>
-        <button onClick={resetCotizador} style={{ ...styles.btnSecondary, fontSize: 12 }}>Reiniciar</button>
+  return <div data-testid="visit-3d-quote-flow">
+    <h2 style={styles.sectionTitle}>Cotizar desde visita en 3D</h2>
+    <p style={{ color: C.textSub, fontSize: 13 }}>Los datos conocidos del cliente se reutilizan. Los precios e IVA provienen exclusivamente del catalogo controlado del servidor.</p>
+
+    <section style={{ ...styles.card, marginBottom: 14 }}>
+      <div style={styles.cardLabel}>1. Visita realizada</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+        {realizadas.map(visit => <button key={visit.id} onClick={() => selectVisit(visit)} style={{ ...styles.tab, ...(selectedVisit?.id === visit.id ? styles.tabActive : {}) }}>{visit.nombre} · {fmtDate(visit.start)}</button>)}
       </div>
+      {!realizadas.length && <p style={{ color: C.textMuted }}>No hay visitas realizadas disponibles.</p>}
+      {selectedVisit && <div style={{ ...styles.detailGrid, marginTop: 14 }}>
+        <span style={styles.detailLabel}>Cliente</span><span>{selectedVisit.nombre}</span>
+        <span style={styles.detailLabel}>Email</span><span>{selectedVisit.email || 'No disponible'}</span>
+        <span style={styles.detailLabel}>Celular</span><span>{selectedVisit.celular || 'No disponible'}</span>
+        <span style={styles.detailLabel}>Direccion</span><span>{selectedVisit.direccion || 'No disponible'}</span>
+        <label style={styles.detailLabel} htmlFor="quote-comuna">Comuna</label>
+        <input id="quote-comuna" value={comuna} onChange={e => setComuna(e.target.value)} placeholder="Dato requerido si la visita no lo incluye" style={fieldStyle()} />
+      </div>}
+    </section>
 
-      {/* Origen */}
-      <div style={{ ...styles.card, marginBottom: 14 }}>
-        <div style={styles.cardLabel}>Origen de la cotizacion</div>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          <button onClick={() => setMode('visita')} style={{ ...styles.tab, ...(mode === 'visita' ? styles.tabActive : {}) }}>Desde visita</button>
-          <button onClick={() => setMode('manual')} style={{ ...styles.tab, ...(mode === 'manual' ? styles.tabActive : {}) }}>Ingreso manual</button>
-        </div>
-
-        {mode === 'visita' && (
-          realizadas.length === 0
-            ? <p style={{ color: C.textMuted, fontSize: 14, margin: 0 }}>No hay visitas marcadas como Realizadas aun.</p>
-            : <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-                {realizadas.map(v => (
-                  <button key={v.id} onClick={() => setSelectedVisit(v)} style={{
-                    padding: '7px 14px', borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: 'pointer',
-                    border: '1.5px solid ' + (selectedVisit?.id === v.id ? C.orange : C.border),
-                    background: selectedVisit?.id === v.id ? C.orangeLight : C.surface,
-                    color: selectedVisit?.id === v.id ? C.orangeDark : C.textSub, transition: 'all .15s',
-                  }}>{v.nombre} &middot; {fmtDate(v.start)}</button>
-                ))}
-              </div>
-        )}
-
-        {mode === 'manual' && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-            {[
-              { key: 'nombre',    label: 'Nombre',    full: true, placeholder: 'Nombre completo' },
-              { key: 'email',     label: 'Email',     placeholder: 'correo@ejemplo.com' },
-              { key: 'celular',   label: 'Celular',   placeholder: '+56 9 XXXX XXXX' },
-              { key: 'direccion', label: 'Direccion', full: true, placeholder: 'Direccion' },
-            ].map(({ key, label, full, placeholder }) => (
-              <div key={key} style={{ gridColumn: full ? '1 / -1' : undefined }}>
-                <label style={{ ...styles.detailLabel, display: 'block', marginBottom: 4 }}>{label}</label>
-                <input value={manualCliente[key]}
-                  onChange={e => setManualCliente(prev => ({ ...prev, [key]: e.target.value }))}
-                  placeholder={placeholder}
-                  style={{ ...styles.input, fontSize: 13, padding: '8px 10px' }} />
-              </div>
-            ))}
-          </div>
-        )}
-
-        {mode === 'visita' && selectedVisit && (
-          <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid ' + C.border, ...styles.detailGrid }}>
-            {selectedVisit.email     && <><span style={styles.detailLabel}>Email</span><span style={{ fontSize: 13 }}>{selectedVisit.email}</span></>}
-            {selectedVisit.celular   && <><span style={styles.detailLabel}>Celular</span><span style={{ fontSize: 13 }}>{selectedVisit.celular}</span></>}
-            {selectedVisit.direccion && <><span style={styles.detailLabel}>Direccion</span><span style={{ fontSize: 13 }}>{selectedVisit.direccion}</span></>}
-          </div>
-        )}
+    {selectedVisit && <section style={{ ...styles.card, marginBottom: 14 }}>
+      <div style={styles.cardLabel}>2. Medidas disponibles</div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 }}>
+        {[['projectName','Nombre del proyecto','text'],['wallACm','Muro A (cm)','number'],['wallBAndECm','Muros B/E (cm)','number'],['wallCCm','Muro C (cm)','number'],['wallDCm','Muro D (cm)','number']].map(([key,label,type]) => <label key={key} style={{ fontSize: 12, color: C.textSub }}>{label}<input type={type} value={measurements[key]} onChange={e => setMeasurements(v => ({ ...v, [key]: e.target.value }))} style={fieldStyle({ marginTop: 4, width: '100%' })} /></label>)}
+        <label style={{ fontSize: 12, color: C.textSub }}>Altura<select value={measurements.roomHeightCm} onChange={e => setMeasurements(v => ({ ...v, roomHeightCm: e.target.value }))} style={fieldStyle({ marginTop: 4, width: '100%' })}><option value="">Seleccionar</option>{[250,300,350].map(v => <option key={v} value={v}>{v} cm</option>)}</select></label>
+        <label style={{ fontSize: 12, color: C.textSub }}>Profundidad<select value={measurements.depthCm} onChange={e => setMeasurements(v => ({ ...v, depthCm: e.target.value }))} style={fieldStyle({ marginTop: 4, width: '100%' })}><option value="">Seleccionar</option>{[28,38,48,68].map(v => <option key={v} value={v}>{v} cm</option>)}</select></label>
+        <label style={{ fontSize: 12, color: C.textSub }}>Forma<select value={measurements.shape} onChange={e => setMeasurements(v => ({ ...v, shape: e.target.value }))} style={fieldStyle({ marginTop: 4, width: '100%' })}><option value="single-wall">Un muro</option><option value="L">L</option><option value="U">U</option></select></label>
+        <label style={{ fontSize: 12, color: C.textSub }}>Muros con repisas<select value={measurements.wallSelection} onChange={e => setMeasurements(v => ({ ...v, wallSelection: e.target.value }))} style={fieldStyle({ marginTop: 4, width: '100%' })}><option value="A">A</option><option value="A+B">A+B</option><option value="A+E">A+E</option></select></label>
       </div>
+      <button onClick={startConfigurator} disabled={!!busy} style={{ ...styles.btnPrimary, marginTop: 14 }}>{busy === 'session' ? 'Preparando...' : 'Abrir configurador 3D'}</button>
+    </section>}
 
-      {/* Numero de cotizacion */}
-      <div style={{ ...styles.card, marginBottom: 14 }}>
-        <div style={styles.cardLabel}>Numero de Cotizacion</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 14, fontWeight: 600, color: C.textSub }}>N</span>
-          <input type="number" value={cotNum}
-            onChange={e => { const v = parseInt(e.target.value) || 0; setCotNum(v); setCotNumStorage(v) }}
-            style={{ width: 100, padding: '8px 10px', borderRadius: 9, border: '1.5px solid ' + C.border, fontSize: 16, fontWeight: 700, fontFamily: 'inherit', textAlign: 'center', background: '#FAFAFA', outline: 'none' }} />
-          <span style={{ color: C.textMuted, fontSize: 12 }}>Se incrementa automaticamente al generar</span>
-        </div>
-      </div>
+    {session && project && <>
+      <section style={{ ...styles.card, marginBottom: 14 }}><div style={styles.cardLabel}>3. Configuracion exacta</div><EmbedConfigurator session={session} project={project} onProject={setProject} /></section>
+      <section style={{ ...styles.card, marginBottom: 14 }}><div style={styles.cardLabel}>4. Servicios adicionales</div>
+        {(catalog?.services || []).length ? catalog.services.map(service => <div key={service.id} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(70px, 90px) minmax(90px, 120px)', gap: 10, alignItems: 'center', marginBottom: 8 }}>
+          <span>{service.label}</span><input aria-label={`Cantidad ${service.label}`} type="number" min="0" step="1" value={serviceQty[service.id] || 0} onChange={e => setServiceQty(q => ({ ...q, [service.id]: Math.max(0, Number(e.target.value) || 0) }))} style={fieldStyle()} /><strong>{fmt(service.unitPriceNetClp)}</strong>
+        </div>) : <p style={{ color: C.textMuted }}>El catalogo no contiene servicios adicionales.</p>}
+      </section>
+    </>}
 
-      {/* Repisas */}
-      <div style={{ ...styles.card, marginBottom: 14 }}>
-        <div style={styles.cardLabel}>Repisas</div>
-        <div style={{ overflowX: 'auto' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560 }}>
-            <thead>
-              <tr style={{ background: C.sidebar }}>
-                {['Largo (m)', 'Prof. (m)', 'Alto (m)', 'Niveles', 'Unidades', 'Valor ($)', 'Total', ''].map(h => (
-                  <th key={h} style={{ padding: '9px 8px', fontWeight: 700, fontSize: 11, color: 'rgba(255,255,255,.7)', textAlign: 'center', letterSpacing: .5 }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {repisas.map((r, idx) => (
-                <tr key={r.id} style={{ background: idx % 2 === 0 ? 'white' : '#FAFAFA' }}>
-                  <td style={{ padding: '5px 4px' }}>
-                    <input type="number" value={r.l} step="0.01" onChange={e => updRep(r.id, 'l', e.target.value)} style={inputStyle} />
-                  </td>
-                  <td style={{ padding: '5px 4px', minWidth: 90 }}>
-                    <SelectOrFree options={[0.28,0.38,0.48,0.68]} value={r.p} onChange={v => updRep(r.id, 'p', v)} step={0.01} />
-                  </td>
-                  <td style={{ padding: '5px 4px', minWidth: 90 }}>
-                    <SelectOrFree options={[2,2.5,3]} value={r.a} onChange={v => updRep(r.id, 'a', v)} step={0.1} />
-                  </td>
-                  <td style={{ padding: '5px 4px', minWidth: 80 }}>
-                    <SelectOrFree options={[4,5,6]} value={r.n} onChange={v => updRep(r.id, 'n', v)} step={1} />
-                  </td>
-                  <td style={{ padding: '5px 4px' }}>
-                    <input type="number" value={r.u} step="1" min="1" onChange={e => updRep(r.id, 'u', e.target.value)} style={inputStyle} />
-                  </td>
-                  <td style={{ padding: '5px 4px' }}>
-                    <input type="number" value={r.v} step="1000" onChange={e => updRep(r.id, 'v', e.target.value)} style={inputStyle} />
-                  </td>
-                  <td style={{ padding: '5px 8px', textAlign: 'center', fontWeight: 700, color: C.orangeDark, whiteSpace: 'nowrap' }}>{fmt(r.u * r.v)}</td>
-                  <td style={{ padding: '5px 4px', textAlign: 'center' }}>
-                    {repisas.length > 1 && (
-                      <button onClick={() => removeRepisa(r.id)}
-                        style={{ background: 'none', border: '1.5px solid ' + C.border, borderRadius: 6, width: 28, height: 28, cursor: 'pointer', color: C.textMuted, fontSize: 15, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>x</button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        {repisas.length < 4 && (
-          <button onClick={addRepisa}
-            style={{ marginTop: 10, width: '100%', background: 'none', border: '2px dashed ' + C.orange + '60', color: C.orange, padding: '9px', borderRadius: 9, cursor: 'pointer', fontWeight: 700, fontSize: 13 }}>
-            + Agregar repisa
-          </button>
-        )}
-      </div>
+    {calculation && <section style={{ ...styles.card, marginBottom: 14 }} data-testid="controlled-quote-totals">
+      <div style={styles.cardLabel}>5. Lineas y totales controlados · Catalogo {catalog.version}</div>
+      {calculation.lines.map((line, index) => <div key={`${line.catalogItemId}-${index}`} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) minmax(50px, 70px) minmax(90px, 120px)', gap: 8, padding: '6px 0', borderBottom: '1px solid ' + C.border }}><span style={{ overflowWrap: 'anywhere' }}>{line.description}</span><span>x {line.quantity}</span><strong style={{ textAlign: 'right' }}>{fmt(line.totalNetClp)}</strong></div>)}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: 6, marginTop: 12 }}><span>Subtotal neto</span><strong>{fmt(calculation.totals.subtotalNetClp)}</strong><span>IVA ({calculation.totals.ivaBasisPoints / 100}%)</span><strong>{fmt(calculation.totals.ivaClp)}</strong><span style={{ fontSize: 18, color: C.orangeDark }}>Total</span><strong style={{ fontSize: 18, color: C.orangeDark }}>{fmt(calculation.totals.totalClp)}</strong></div>
+      <button onClick={saveQuote} disabled={!!busy} style={{ ...styles.btnPrimary, width: '100%', marginTop: 14 }}>{busy === 'save' ? 'Guardando y generando PDF...' : quoteId ? 'Guardar nueva version y generar PDF' : 'Guardar cotizacion y generar PDF'}</button>
+    </section>}
 
-      {/* Adicionales */}
-      <div style={{ ...styles.card, marginBottom: 14 }}>
-        <div style={styles.cardLabel}>Adicionales</div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 120px 90px', gap: '8px 10px', alignItems: 'center', fontSize: 13 }}>
-          {['Servicio', 'Cant.', 'Precio unit.', 'Total'].map(h => (
-            <span key={h} style={{ fontWeight: 700, fontSize: 10, color: C.textMuted, textTransform: 'uppercase', letterSpacing: .8, textAlign: h !== 'Servicio' ? 'center' : 'left' }}>{h}</span>
-          ))}
-          {['retiro_orden','retiro_basura','cajas','bici'].map(key => {
-            const q = adicionales['qty_' + key] || 0
-            const p = adicionales['precio_' + key] || 0
-            const isEditingThis = editingNombre === key
-            return (
-              <React.Fragment key={key}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                  {isEditingThis
-                    ? <input value={adNombres[key]} autoFocus
-                        onChange={e => setAdNombres(prev => ({ ...prev, [key]: e.target.value }))}
-                        onBlur={() => setEditingNombre(null)}
-                        onKeyDown={e => e.key === 'Enter' && setEditingNombre(null)}
-                        style={{ ...styles.input, fontSize: 13, padding: '5px 8px' }} />
-                    : <span style={{ color: C.text, fontSize: 13 }}>{adNombres[key]}</span>
-                  }
-                  {!isEditingThis && (
-                    <button type="button" onClick={() => setEditingNombre(key)}
-                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.textMuted, padding: 2, display: 'flex', flexShrink: 0 }}>
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-                    </button>
-                  )}
-                </div>
-                <input type="number" value={q} min="0"
-                  onChange={e => setAdicionales(prev => ({ ...prev, ['qty_' + key]: parseInt(e.target.value) || 0 }))}
-                  style={inputStyle} />
-                <input type="number" value={p} min="0" step="1000"
-                  onChange={e => setAdicionales(prev => ({ ...prev, ['precio_' + key]: parseInt(e.target.value) || 0 }))}
-                  style={inputStyle} />
-                <span style={{ textAlign: 'center', color: q > 0 ? C.orangeDark : C.textMuted, fontSize: 13, fontWeight: q > 0 ? 700 : 400 }}>{fmt(q * p)}</span>
-              </React.Fragment>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Totales */}
-      <div style={{ ...styles.card, marginBottom: 20, background: C.orangeLight, border: '1px solid ' + C.orange + '30' }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {[['Subtotal neto', totales.subtotal], ['IVA (19%)', totales.iva]].map(([label, val]) => (
-            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 14 }}>
-              <span style={{ color: C.textSub }}>{label}</span>
-              <span style={{ fontWeight: 600 }}>{fmt(val)}</span>
-            </div>
-          ))}
-          <div style={{ height: 1, background: C.orange + '40', margin: '8px 0' }} />
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 22, fontWeight: 800, color: C.orangeDark }}>
-            <span>Total</span><span>{fmt(totales.total)}</span>
-          </div>
-        </div>
-      </div>
-
-      {error && <div style={{ ...styles.errorBox, marginBottom: 14 }}>{error}</div>}
-
-      <button onClick={handleGenerar}
-        disabled={generating || (mode === 'visita' && !selectedVisit) || (mode === 'manual' && !manualCliente.nombre.trim())}
-        style={{
-          ...styles.btnPrimary, width: '100%', padding: '15px', fontSize: 15, borderRadius: 12, marginBottom: 14,
-          opacity: (generating || (mode === 'visita' && !selectedVisit) || (mode === 'manual' && !manualCliente.nombre.trim())) ? .55 : 1,
-        }}>
-        {generating ? 'Generando PDF...' : 'Generar Cotizacion PDF'}
-      </button>
-
-      {pdfUrl && (
-        <div style={{ ...styles.card, borderLeft: '4px solid ' + C.green }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-            <div>
-              <p style={{ fontWeight: 700, color: autoSaved ? C.green : C.orange, marginBottom: 2, marginTop: 0 }}>
-                {autoSaved ? 'PDF generado y guardado' : 'PDF generado'}
-              </p>
-              <p style={{ fontSize: 13, color: C.textSub, margin: 0 }}>Total: {fmt(totalInfo.total)}</p>
-            </div>
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              <button onClick={handleDescargar} style={styles.btnSecondary}>Descargar</button>
-              <a href={pdfUrl} target="_blank" rel="noreferrer"
-                style={{ ...styles.btnSecondary, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}>
-                Ver PDF
-              </a>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  )
+    {savedQuote && <section style={{ ...styles.card, borderLeft: '4px solid ' + C.green }} data-testid="saved-quote-result">
+      <div style={styles.cardLabel}>Cotizacion asociada</div><p><strong>{savedQuote.quoteNumber}</strong> · Version {savedQuote.version} · Estado: {savedQuote.status}</p>
+      <p style={{ fontSize: 12, color: C.textMuted }}>Visita {savedQuote.visit.id} · Configuracion {savedQuote.configuration.sha256.slice(0, 12)} · PDF {savedQuote.pdf.sha256.slice(0, 12)}</p>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><a href={savedQuote.pdf.url} target="_blank" rel="noreferrer" style={styles.btnPrimary}>Abrir PDF de 2 paginas</a><button onClick={reopenSaved} disabled={!!busy} style={styles.btnSecondary}>{busy === 'reopen' ? 'Reabriendo...' : 'Reabrir esta version'}</button></div>
+    </section>}
+    {error && <div style={{ ...styles.errorBox, marginTop: 14 }} role="alert">{error}</div>}
+  </div>
 }

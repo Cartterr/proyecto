@@ -66,6 +66,11 @@ export async function handler(event) {
         const m = desc.match(new RegExp(`${label}:\\s*(.+)`))
         return m ? m[1].trim() : ''
       }
+      let measurements
+      try {
+        const encoded = ev.extendedProperties?.private?.measurements_json || ev.extendedProperties?.shared?.measurements_json
+        measurements = encoded ? JSON.parse(encoded) : undefined
+      } catch { measurements = undefined }
       return {
         id: ev.id,
         summary: ev.summary || '',
@@ -74,7 +79,9 @@ export async function handler(event) {
         email: get('Email'),
         celular: get('Celular'),
         direccion: get('Dirección'),
+        comuna: get('Comuna'),
         notas: get('Notas') === '(sin notas)' ? '' : get('Notas'),
+        ...(measurements ? { measurements } : {}),
         slotKey: ev.extendedProperties?.shared?.slot_key || '',
         nombre: ev.summary?.match(/Visita — (.+?) \(/)?.[1] || ev.summary || '',
         status: statusMap[ev.id] || 'agendada',

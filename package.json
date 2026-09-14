@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:bridge": "node scripts/dev-bridge.mjs",
+    "test": "node --test src/admin/quoteIntegration.test.js",
     "build": "vite build",
     "preview": "vite preview",
     "netlify:dev": "netlify dev",

@@ -1,6 +1,5 @@
 export const ADMIN_PASSWORD = '2003'
 export const SESSION_KEY = 'dm_admin_auth'
-export const CONVERTAPI_SECRET = 'SR5rDhdFxm8ddVMXxHjJdLmg3Rf0JLok'
 
 export const VISIT_STATUS_LABELS = {
   agendada:           { label: 'Agendada',              color: '#3B82F6' },

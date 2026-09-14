@@ -10,8 +10,8 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '2003'
 const SHEET_ID       = process.env.GOOGLE_SHEET_ID
 const SHEET_NAME     = 'Cotizaciones'
 
-// Columnas A-P: N°Cot | Nombre | Email | Teléfono | Dirección | FechaVisita | Subtotal | IVA | Total | Estado | MotivoRechazo | Notas | Repisas(JSON) | Adicionales(JSON) | Creado | PDF URL
-const HEADERS = ['N° Cot','Nombre','Email','Teléfono','Dirección','Fecha Visita','Subtotal','IVA','Total','Estado','Motivo Rechazo','Notas','Repisas (JSON)','Adicionales (JSON)','Creado','PDF URL']
+// Las columnas A-P se preservan para compatibilidad; Q-U agregan trazabilidad 3D inmutable.
+const HEADERS = ['N° Cot','Nombre','Email','Teléfono','Dirección','Fecha Visita','Subtotal','IVA','Total','Estado','Motivo Rechazo','Notas','Repisas (JSON)','Adicionales (JSON)','Creado','PDF URL','Visit ID','Quote 3D ID','Version','Configuration SHA-256','PDF SHA-256']
 
 export async function handler(event) {
   if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: corsHeaders }
@@ -26,7 +26,8 @@ export async function handler(event) {
       subtotal, iva, total, status = 'por confirmar',
       motivoRechazo = '', notas = '',
       repisas = [], adicionales = {},
-      pdfUrl = '',
+      pdfUrl = '', visitId = '', quote3dId = '', quoteVersion = '',
+      configurationSha256 = '', pdfSha256 = '',
     } = JSON.parse(event.body || '{}')
 
     if (!cotNum || !nombre)
@@ -36,11 +37,11 @@ export async function handler(event) {
     auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN })
     const sheets = google.sheets({ version: 'v4', auth })
 
-    // Crear encabezado si no existe
-    const head = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1:A1` }).catch(() => ({ data: { values: [] } }))
-    if (!head.data.values?.length) {
-      await sheets.spreadsheets.values.append({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1`, valueInputOption: 'RAW', requestBody: { values: [HEADERS] } })
-    }
+    // Mantener el encabezado completo; no altera filas historicas.
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1:U1`, valueInputOption: 'RAW',
+      requestBody: { values: [HEADERS] },
+    })
 
     // Buscar fila existente
     const all = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A:A` }).catch(() => ({ data: { values: [] } }))
@@ -54,7 +55,7 @@ export async function handler(event) {
 
     if (rowIndex > 0) {
       // Preservar createdAt y pdfUrl existente si no viene nueva
-      const existing = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A${rowIndex}:P${rowIndex}` }).catch(() => ({ data: { values: [] } }))
+      const existing = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A${rowIndex}:U${rowIndex}` }).catch(() => ({ data: { values: [] } }))
       const existingRow = existing.data.values?.[0] || []
       const existingCreado = existingRow[14] || createdAt
       const finalPdfUrl = pdfUrl || existingRow[15] || ''
@@ -63,16 +64,16 @@ export async function handler(event) {
         fechaVisita || '', subtotal || '', iva || '', total || '',
         status, motivoRechazo, notas,
         JSON.stringify(repisas), JSON.stringify(adicionales),
-        existingCreado, finalPdfUrl,
+        existingCreado, finalPdfUrl, visitId, quote3dId, quoteVersion, configurationSha256, pdfSha256,
       ]
-      await sheets.spreadsheets.values.update({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A${rowIndex}:P${rowIndex}`, valueInputOption: 'RAW', requestBody: { values: [row] } })
+      await sheets.spreadsheets.values.update({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A${rowIndex}:U${rowIndex}`, valueInputOption: 'RAW', requestBody: { values: [row] } })
     } else {
       const row = [
         String(cotNum), nombre, email || '', telefono || '', direccion || '',
         fechaVisita || '', subtotal || '', iva || '', total || '',
         status, motivoRechazo, notas,
         JSON.stringify(repisas), JSON.stringify(adicionales),
-        createdAt, pdfUrl,
+        createdAt, pdfUrl, visitId, quote3dId, quoteVersion, configurationSha256, pdfSha256,
       ]
       await sheets.spreadsheets.values.append({ spreadsheetId: SHEET_ID, range: `${SHEET_NAME}!A1`, valueInputOption: 'RAW', requestBody: { values: [row] } })
     }

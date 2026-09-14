@@ -33,11 +33,17 @@ export default function CotizacionesSection() {
 
   const load = useCallback(async () => {
     setLoading(true); setError('')
+    const demoEnabled = import.meta.env.DEV && new URLSearchParams(window.location.search).get('demo') === '1'
+    const demoQuotes = demoEnabled ? JSON.parse(localStorage.getItem('dm_demo_3d_quotes') || '[]') : []
     try {
       const quotesData = await apiFetch('/.netlify/functions/get-quotes')
-      if (quotesData.ok) setQuotes(quotesData.quotes)
+      if (quotesData.ok) setQuotes([...demoQuotes, ...quotesData.quotes])
+      else if (demoQuotes.length) setQuotes(demoQuotes)
       else setError(quotesData.error || 'Error')
-    } catch { setError('No se pudo conectar') }
+    } catch {
+      if (demoQuotes.length) setQuotes(demoQuotes)
+      else setError('No se pudo conectar')
+    }
     finally { setLoading(false) }
   }, [])
 
@@ -233,6 +239,8 @@ export default function CotizacionesSection() {
                     {q.email    && <><span style={styles.detailLabel}>Email</span><span style={{ fontSize: 13 }}>{q.email}</span></>}
                     {q.telefono && <><span style={styles.detailLabel}>Tel</span><span style={{ fontSize: 13 }}>{q.telefono}</span></>}
                     {q.fechaVisita && <><span style={styles.detailLabel}>Visita</span><span style={{ fontSize: 13 }}>{fmtDate(q.fechaVisita)}</span></>}
+                    {q.visitId && <><span style={styles.detailLabel}>ID visita</span><span style={{ fontSize: 13 }}>{q.visitId}</span></>}
+                    {q.quote3dId && <><span style={styles.detailLabel}>Cotizacion 3D</span><span style={{ fontSize: 13 }}>{q.quote3dId} · version {q.quoteVersion}</span></>}
                     {q.subtotal > 0 && <><span style={styles.detailLabel}>Subtotal</span><span style={{ fontSize: 13 }}>{fmt(q.subtotal)}</span></>}
                     {q.iva      > 0 && <><span style={styles.detailLabel}>IVA</span><span style={{ fontSize: 13 }}>{fmt(q.iva)}</span></>}
                     {q.total    > 0 && <><span style={styles.detailLabel}>Total</span><span style={{ fontSize: 13, fontWeight: 700, color: C.orangeDark }}>{fmt(q.total)}</span></>}
@@ -247,7 +255,7 @@ export default function CotizacionesSection() {
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                         Ver PDF
                       </a>
-                      <a href={'https://drive.google.com/uc?export=download&id=' + driveFileId(q.pdfUrl)}
+                      <a href={q.quote3dId ? q.pdfUrl : 'https://drive.google.com/uc?export=download&id=' + driveFileId(q.pdfUrl)}
                         style={{ ...styles.btnSecondary, fontSize: 12, padding: '6px 14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                         Descargar
