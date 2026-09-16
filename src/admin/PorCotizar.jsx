@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react'
-import { ADMIN_PASSWORD, CONVERTAPI_SECRET, DEFAULTS_REPISA, C, apiFetch, fmtDate, fmt, styles } from './utils.js'
+import { ADMIN_PASSWORD, DEFAULTS_REPISA, C, apiFetch, fmtDate, fmt, styles } from './utils.js'
 
 function SelectOrFree({ options, value, onChange, step = 0.01 }) {
   const [libre, setLibre] = useState(() => !options.includes(Number(value)))
@@ -144,24 +144,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
       }
       setTotalInfo(finalTotals)
 
-      const xlsxBlob = await res.blob()
-      const formData = new FormData()
-      formData.append('File', xlsxBlob, 'cotizacion.xlsx')
-      const convertRes  = await fetch('https://v2.convertapi.com/convert/xlsx/to/pdf?Secret=' + CONVERTAPI_SECRET, { method: 'POST', body: formData })
-      const convertData = await convertRes.json()
-      if (!convertRes.ok || !convertData.Files) throw new Error('ConvertAPI: ' + (convertData.Message || 'Error'))
-
-      const fi = convertData.Files[0]
-      let blob
-      if (fi.FileData) {
-        const bin = atob(fi.FileData)
-        const bytes = new Uint8Array(bin.length)
-        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-        blob = new Blob([bytes], { type: 'application/pdf' })
-      } else {
-        blob = await fetch(fi.Url).then(r => r.blob())
-      }
-
+      const blob = await res.blob()
       setPdfBlob(blob); setPdfUrl(URL.createObjectURL(blob))
 
       const next = cotNum + 1; setCotNum(next); setCotNumStorage(next)
@@ -169,7 +152,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
       // Subir PDF a Drive
       let uploadedPdfUrl = ''
       try {
-        const pdfBase64ToUpload = fi.FileData || await blob.arrayBuffer().then(buf =>
+        const pdfBase64ToUpload = await blob.arrayBuffer().then(buf =>
           btoa(String.fromCharCode(...new Uint8Array(buf)))
         )
         const nombreInicial = (cliente.nombre || 'cliente').split(' ')

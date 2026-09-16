@@ -1,8 +1,10 @@
 // netlify/functions/generate-quote.mjs
-// Porta la lógica de server.py: lee cotizacion.xlsx, rellena celdas, devuelve xlsx
+// Porta la lógica de server.py: lee cotizacion.xlsx, rellena celdas, convierte a PDF
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import JSZip from 'jszip'
+import { google } from 'googleapis'
+import { Readable } from 'stream'
 
 // En Netlify Functions con esbuild, los included_files quedan en /var/task/
 // junto al bundle. LAMBDA_TASK_ROOT apunta a esa carpeta.
@@ -152,6 +154,68 @@ const baseBytes = readFileSync(join(FUNCTIONS_DIR, 'cotizacion.xlsx'))
   return { bytes: outBytes, subtotal, iva, total }
 }
 
+// ── Conversión xlsx -> PDF vía Google Drive/Sheets (reemplaza ConvertAPI) ─────
+// Sube el xlsx pidiendo que Drive lo convierta a Google Sheets, recorta esa
+// copia temporal al área de impresión real y la exporta a PDF; al final borra
+// el archivo temporal. No agrega costo ni credenciales nuevas: reusa el mismo
+// refresh token OAuth (scope drive.file) que ya usan create_event/upload-pdf.
+async function xlsxBufferToPdf(xlsxBuffer, fileNameBase) {
+  const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET)
+  auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN })
+  const drive = google.drive({ version: 'v3', auth })
+  const sheets = google.sheets({ version: 'v4', auth })
+
+  const { data: tempFile } = await drive.files.create({
+    requestBody: { name: fileNameBase, mimeType: 'application/vnd.google-apps.spreadsheet' },
+    media: {
+      mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      body: Readable.from(xlsxBuffer),
+    },
+    fields: 'id',
+  })
+  const fileId = tempFile.id
+
+  try {
+    // La plantilla trae "dimension" hasta CB45 aunque el contenido real es
+    // K3:Q39 — si no se recorta, el export trata la hoja como gigante y
+    // encoge el contenido real a una esquina.
+    const meta = await sheets.spreadsheets.get({ spreadsheetId: fileId, fields: 'sheets(properties(sheetId,title))' })
+    const hoja1 = meta.data.sheets.find(s => s.properties.title === 'Hoja1')
+    const sheetId = hoja1?.properties.sheetId ?? 0
+
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId: fileId,
+      requestBody: {
+        requests: [
+          { updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: 39, columnCount: 17 } }, fields: 'gridProperties.rowCount,gridProperties.columnCount' } },
+          { deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 2 } } },
+          { deleteDimension: { range: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 10 } } },
+        ],
+      },
+    })
+
+    const { token } = await auth.getAccessToken()
+    const params = new URLSearchParams({
+      format: 'pdf', size: 'letter', portrait: 'true', fitw: 'true',
+      sheetnames: 'false', printtitle: 'false', pagenumbers: 'false',
+      gridlines: 'false', fzr: 'false',
+      horizontal_alignment: 'CENTER', vertical_alignment: 'TOP',
+      top_margin: '0.3', bottom_margin: '0.3', left_margin: '0.3', right_margin: '0.3',
+      gid: String(sheetId),
+    })
+    const resp = await fetch(`https://docs.google.com/spreadsheets/d/${fileId}/export?${params}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => '')
+      throw new Error(`Exportación a PDF falló (${resp.status}): ${txt.slice(0, 300)}`)
+    }
+    return Buffer.from(await resp.arrayBuffer())
+  } finally {
+    await drive.files.delete({ fileId }).catch(() => {})
+  }
+}
+
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 export async function handler(event) {
@@ -165,18 +229,19 @@ export async function handler(event) {
   try {
     const data = JSON.parse(event.body || '{}')
     const { bytes, subtotal, iva, total } = await generateXlsx(data)
+    const pdfBytes = await xlsxBufferToPdf(bytes, 'Cotizacion-' + (data.cot_num ?? Date.now()))
 
     return {
       statusCode: 200,
       headers: {
         ...corsHeaders,
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Content-Disposition': `attachment; filename="cotizacion.xlsx"`,
+        'Content-Type': 'application/pdf',
+        'Content-Disposition': `attachment; filename="cotizacion.pdf"`,
         'x-subtotal': String(subtotal),
         'x-iva': String(iva),
         'x-total': String(total),
       },
-      body: bytes.toString('base64'),
+      body: pdfBytes.toString('base64'),
       isBase64Encoded: true,
     }
   } catch (err) {
