@@ -176,24 +176,30 @@ async function xlsxBufferToPdf(xlsxBuffer, fileNameBase) {
   const fileId = tempFile.id
 
   try {
-    // La plantilla trae "dimension" hasta CB45 aunque el contenido real es
-    // K3:Q39 — si no se recorta, el export trata la hoja como gigante y
-    // encoge el contenido real a una esquina.
+    // La plantilla tiene 6 hojas (Hoja1 = cotización, las demás = galería,
+    // preguntas frecuentes, testimonio, etc.) que juntas forman el PDF final
+    // de varias páginas. Cada una trae "dimension" hasta la columna CB aunque
+    // su área de impresión real es mucho más chica (K3:Q<N>, según la hoja):
+    // si no se recorta, el export encoge el contenido real a una esquina.
+    const PRINT_AREA_ROWS = { Hoja1: 39, Hoja2: 42, Hoja4: 43, Hoja8: 43, Hoja3: 43, Hoja5: 43 }
+
     const meta = await sheets.spreadsheets.get({ spreadsheetId: fileId, fields: 'sheets(properties(sheetId,title))' })
-    const hoja1 = meta.data.sheets.find(s => s.properties.title === 'Hoja1')
-    const sheetId = hoja1?.properties.sheetId ?? 0
+    const trimRequests = []
+    for (const s of meta.data.sheets) {
+      const rowCount = PRINT_AREA_ROWS[s.properties.title]
+      if (!rowCount) continue
+      const sheetId = s.properties.sheetId
+      trimRequests.push(
+        { updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount, columnCount: 17 } }, fields: 'gridProperties.rowCount,gridProperties.columnCount' } },
+        { deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 2 } } },
+        { deleteDimension: { range: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 10 } } },
+      )
+    }
+    if (trimRequests.length) {
+      await sheets.spreadsheets.batchUpdate({ spreadsheetId: fileId, requestBody: { requests: trimRequests } })
+    }
 
-    await sheets.spreadsheets.batchUpdate({
-      spreadsheetId: fileId,
-      requestBody: {
-        requests: [
-          { updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount: 39, columnCount: 17 } }, fields: 'gridProperties.rowCount,gridProperties.columnCount' } },
-          { deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 2 } } },
-          { deleteDimension: { range: { sheetId, dimension: 'COLUMNS', startIndex: 0, endIndex: 10 } } },
-        ],
-      },
-    })
-
+    // Sin "gid" exporta TODAS las hojas, una por página, en el orden del libro.
     const { token } = await auth.getAccessToken()
     const params = new URLSearchParams({
       format: 'pdf', size: 'letter', portrait: 'true', fitw: 'true',
@@ -201,7 +207,6 @@ async function xlsxBufferToPdf(xlsxBuffer, fileNameBase) {
       gridlines: 'false', fzr: 'false',
       horizontal_alignment: 'CENTER', vertical_alignment: 'TOP',
       top_margin: '0.3', bottom_margin: '0.3', left_margin: '0.3', right_margin: '0.3',
-      gid: String(sheetId),
     })
     const resp = await fetch(`https://docs.google.com/spreadsheets/d/${fileId}/export?${params}`, {
       headers: { Authorization: `Bearer ${token}` },
