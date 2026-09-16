@@ -63,10 +63,27 @@ function EmbedConfigurator({ session, project, onProject }) {
 
 export default function PorCotizarSection({ statuses, visitaSeleccionada, allVisits, onVisitCotizada }) {
   const demoEnabled = import.meta.env.DEV && new URLSearchParams(window.location.search).get('demo') === '1'
+  // allVisits is only hydrated once the Visitas section has been opened, so cotizar looked empty
+  // for anyone who landed here first. Load the visits directly when that list is still empty.
+  const [ownVisits, setOwnVisits] = useState([])
+  useEffect(() => {
+    if (allVisits.length) return undefined
+    let cancelled = false
+    apiFetch('/.netlify/functions/get-visits')
+      .then(data => { if (!cancelled && data?.ok) setOwnVisits(data.visits || []) })
+      .catch(() => { /* la seccion Visitas mostrara el error de carga */ })
+    return () => { cancelled = true }
+  }, [allVisits.length])
+  const visitPool = allVisits.length ? allVisits : ownVisits
   const realizadas = useMemo(() => {
-    const source = allVisits.filter(v => statuses[v.id] === 'realizada' || v.status === 'realizada')
+    const source = visitPool.filter(v => statuses[v.id] === 'realizada' || v.status === 'realizada')
     return demoEnabled && !source.some(v => v.id === demoVisit.id) ? [demoVisit, ...source] : source
-  }, [allVisits, statuses, demoEnabled])
+  }, [visitPool, statuses, demoEnabled])
+  // Una cotizacion puede nacer de una visita realizada o de un ingreso manual, para los casos
+  // en que el cliente llega sin visita previa. Ambos caminos usan el mismo configurador 3D.
+  const [mode, setMode] = useState('visita')
+  const [manualCliente, setManualCliente] = useState({ nombre: '', email: '', celular: '', direccion: '', comuna: '' })
+  const [manualVisitId] = useState(() => `manual-${crypto.randomUUID()}`)
   const [selectedVisit, setSelectedVisit] = useState(visitaSeleccionada || null)
   const [comuna, setComuna] = useState(visitaSeleccionada?.comuna || '')
   const [measurements, setMeasurements] = useState({ ...emptyMeasurements, ...(visitaSeleccionada?.measurements || {}) })
@@ -82,10 +99,32 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
 
   useEffect(() => { if (visitaSeleccionada) selectVisit(visitaSeleccionada) }, [visitaSeleccionada])
 
+  const manualVisit = useMemo(() => ({
+    id: manualVisitId, status: 'realizada', start: '',
+    nombre: manualCliente.nombre, email: manualCliente.email, celular: manualCliente.celular,
+    direccion: manualCliente.direccion, comuna: manualCliente.comuna,
+  }), [manualVisitId, manualCliente])
+
+  const activeVisit = mode === 'visita' ? selectedVisit : manualVisit
+  const activeComuna = mode === 'visita' ? comuna : manualCliente.comuna
+  const manualReady = Boolean(manualCliente.nombre.trim() && manualCliente.direccion.trim() && manualCliente.comuna.trim())
+  const readyForMeasurements = mode === 'visita' ? Boolean(selectedVisit) : manualReady
+
+  function resetFlow() {
+    setSession(null); setProject(null); setCatalog(null); setCalculation(null)
+    setSavedQuote(null); setQuoteId(null); setError('')
+  }
+
+  function changeMode(next) {
+    if (next === mode) return
+    setMode(next); resetFlow()
+    setMeasurements({ ...emptyMeasurements })
+  }
+
   function selectVisit(visit) {
     setSelectedVisit(visit); setComuna(visit.comuna || '')
     setMeasurements({ ...emptyMeasurements, projectName: `Cotizacion ${visit.nombre || ''}`.trim(), ...(visit.measurements || {}) })
-    setSession(null); setProject(null); setCatalog(null); setCalculation(null); setSavedQuote(null); setQuoteId(null); setError('')
+    resetFlow()
   }
 
   function services() {
@@ -102,7 +141,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   async function startConfigurator() {
     setBusy('session'); setError(''); setSavedQuote(null)
     try {
-      const visit = completedVisitSnapshot(selectedVisit, comuna)
+      const visit = completedVisitSnapshot(activeVisit, activeComuna)
       const normalizedMeasurements = measurementPayload(measurements)
       const data = await callIntegration({ action: 'session', visit, measurements: normalizedMeasurements })
       setSession(data); setProject(data.project); setCatalog(data.catalog)
@@ -125,28 +164,31 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
     if (!project || !calculation) return
     setBusy('save'); setError('')
     try {
-      const visit = completedVisitSnapshot(selectedVisit, comuna)
+      const visit = completedVisitSnapshot(activeVisit, activeComuna)
       const data = await callIntegration({ action: 'save', quoteId, visit, project, serviceSelections: services(), status: 'draft' })
       const quote = data.quote
       setSavedQuote(quote); setQuoteId(quote.quoteId)
       const mirror = miniErpQuoteRecord(quote)
-      mirror.fechaVisita = selectedVisit?.start || ''
-      if (demoEnabled && selectedVisit.id === demoVisit.id) {
+      mirror.fechaVisita = (mode === 'visita' ? selectedVisit?.start : '') || ''
+      if (demoEnabled && mode === 'visita' && selectedVisit.id === demoVisit.id) {
         const existing = JSON.parse(localStorage.getItem(DEMO_QUOTES_KEY) || '[]')
         localStorage.setItem(DEMO_QUOTES_KEY, JSON.stringify([mirror, ...existing.filter(item => item.cotNum !== mirror.cotNum)]))
       } else {
         const stored = await apiFetch('/.netlify/functions/save-quote', { method: 'POST', body: JSON.stringify(mirror) })
         if (!stored.ok) throw new Error(stored.error || 'La cotizacion 3D se guardo, pero no pudo asociarse al mini ERP')
-        const visitUpdate = await apiFetch('/.netlify/functions/update-visit-status', {
-          method: 'POST', body: JSON.stringify({
-            visitId: selectedVisit.id, nombre: selectedVisit.nombre, fecha: fmtDate(selectedVisit.start), hora: '',
-            email: selectedVisit.email || '', celular: selectedVisit.celular || '', direccion: selectedVisit.direccion || '',
-            status: 'realizada_cotizada', notas: selectedVisit.notas || '',
-          }),
-        })
-        if (!visitUpdate.ok) throw new Error(visitUpdate.error || 'La cotizacion se guardo, pero no se pudo actualizar la visita')
+        // Una cotizacion manual no tiene visita agendada, asi que no hay estado que actualizar.
+        if (mode === 'visita') {
+          const visitUpdate = await apiFetch('/.netlify/functions/update-visit-status', {
+            method: 'POST', body: JSON.stringify({
+              visitId: selectedVisit.id, nombre: selectedVisit.nombre, fecha: fmtDate(selectedVisit.start), hora: '',
+              email: selectedVisit.email || '', celular: selectedVisit.celular || '', direccion: selectedVisit.direccion || '',
+              status: 'realizada_cotizada', notas: selectedVisit.notas || '',
+            }),
+          })
+          if (!visitUpdate.ok) throw new Error(visitUpdate.error || 'La cotizacion se guardo, pero no se pudo actualizar la visita')
+        }
       }
-      onVisitCotizada?.(selectedVisit.id, 'realizada_cotizada')
+      if (mode === 'visita') onVisitCotizada?.(selectedVisit.id, 'realizada_cotizada')
     } catch (e) { setError(e.message) }
     finally { setBusy('') }
   }
@@ -164,26 +206,51 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   }
 
   return <div data-testid="visit-3d-quote-flow">
-    <h2 style={styles.sectionTitle}>Cotizar desde visita en 3D</h2>
-    <p style={{ color: C.textSub, fontSize: 13 }}>Los datos conocidos del cliente se reutilizan. Los precios e IVA provienen exclusivamente del catalogo controlado del servidor.</p>
+    <h2 style={styles.sectionTitle}>Cotizar en 3D</h2>
+    <p style={{ color: C.textSub, fontSize: 13 }}>Desde una visita realizada se reutilizan los datos conocidos del cliente; sin visita se ingresan a mano. Los precios e IVA provienen exclusivamente del catalogo controlado del servidor.</p>
 
     <section style={{ ...styles.card, marginBottom: 14 }}>
-      <div style={styles.cardLabel}>1. Visita realizada</div>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        {realizadas.map(visit => <button key={visit.id} onClick={() => selectVisit(visit)} style={{ ...styles.tab, ...(selectedVisit?.id === visit.id ? styles.tabActive : {}) }}>{visit.nombre} · {fmtDate(visit.start)}</button>)}
+      <div style={styles.cardLabel}>1. Origen de la cotizacion</div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+        <button onClick={() => changeMode('visita')} style={{ ...styles.tab, ...(mode === 'visita' ? styles.tabActive : {}) }}>Desde visita</button>
+        <button onClick={() => changeMode('manual')} style={{ ...styles.tab, ...(mode === 'manual' ? styles.tabActive : {}) }}>Ingreso manual</button>
       </div>
-      {!realizadas.length && <p style={{ color: C.textMuted }}>No hay visitas realizadas disponibles.</p>}
-      {selectedVisit && <div style={{ ...styles.detailGrid, marginTop: 14 }}>
-        <span style={styles.detailLabel}>Cliente</span><span>{selectedVisit.nombre}</span>
-        <span style={styles.detailLabel}>Email</span><span>{selectedVisit.email || 'No disponible'}</span>
-        <span style={styles.detailLabel}>Celular</span><span>{selectedVisit.celular || 'No disponible'}</span>
-        <span style={styles.detailLabel}>Direccion</span><span>{selectedVisit.direccion || 'No disponible'}</span>
-        <label style={styles.detailLabel} htmlFor="quote-comuna">Comuna</label>
-        <input id="quote-comuna" value={comuna} onChange={e => setComuna(e.target.value)} placeholder="Dato requerido si la visita no lo incluye" style={fieldStyle()} />
+
+      {mode === 'visita' && <>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          {realizadas.map(visit => <button key={visit.id} onClick={() => selectVisit(visit)} style={{ ...styles.tab, ...(selectedVisit?.id === visit.id ? styles.tabActive : {}) }}>{visit.nombre} · {fmtDate(visit.start)}</button>)}
+        </div>
+        {!realizadas.length && <p style={{ color: C.textMuted }}>No hay visitas realizadas disponibles. Usa <strong>Ingreso manual</strong> para cotizar sin visita.</p>}
+        {selectedVisit && <div style={{ ...styles.detailGrid, marginTop: 14 }}>
+          <span style={styles.detailLabel}>Cliente</span><span>{selectedVisit.nombre}</span>
+          <span style={styles.detailLabel}>Email</span><span>{selectedVisit.email || 'No disponible'}</span>
+          <span style={styles.detailLabel}>Celular</span><span>{selectedVisit.celular || 'No disponible'}</span>
+          <span style={styles.detailLabel}>Direccion</span><span>{selectedVisit.direccion || 'No disponible'}</span>
+          <label style={styles.detailLabel} htmlFor="quote-comuna">Comuna</label>
+          <input id="quote-comuna" value={comuna} onChange={e => setComuna(e.target.value)} placeholder="Dato requerido si la visita no lo incluye" style={fieldStyle()} />
+        </div>}
+      </>}
+
+      {mode === 'manual' && <div data-testid="manual-customer-form" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 10 }}>
+        {[
+          ['nombre', 'Nombre', 'Nombre completo', true],
+          ['direccion', 'Direccion', 'Calle, numero, depto', true],
+          ['comuna', 'Comuna', 'Comuna', true],
+          ['email', 'Email', 'correo@ejemplo.com', false],
+          ['celular', 'Celular', '+56 9 XXXX XXXX', false],
+        ].map(([key, label, placeholder, required]) => (
+          <label key={key} style={{ fontSize: 12, color: C.textSub }}>
+            {label}{required ? ' *' : ''}
+            <input value={manualCliente[key]} placeholder={placeholder}
+              onChange={e => setManualCliente(prev => ({ ...prev, [key]: e.target.value }))}
+              style={fieldStyle({ marginTop: 4, width: '100%' })} />
+          </label>
+        ))}
+        {!manualReady && <p style={{ gridColumn: '1 / -1', color: C.textMuted, fontSize: 12, margin: 0 }}>Nombre, direccion y comuna son obligatorios para continuar.</p>}
       </div>}
     </section>
 
-    {selectedVisit && <section style={{ ...styles.card, marginBottom: 14 }}>
+    {readyForMeasurements && <section style={{ ...styles.card, marginBottom: 14 }}>
       <div style={styles.cardLabel}>2. Medidas disponibles</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(170px,1fr))', gap: 10 }}>
         {[['projectName','Nombre del proyecto','text'],['wallACm','Muro A (cm)','number'],['wallBAndECm','Muros B/E (cm)','number'],['wallCCm','Muro C (cm)','number'],['wallDCm','Muro D (cm)','number']].map(([key,label,type]) => <label key={key} style={{ fontSize: 12, color: C.textSub }}>{label}<input type={type} value={measurements[key]} onChange={e => setMeasurements(v => ({ ...v, [key]: e.target.value }))} style={fieldStyle({ marginTop: 4, width: '100%' })} /></label>)}
