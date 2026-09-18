@@ -75,6 +75,10 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
   // valorizadas con el respaldo del bundle en vez de la planilla del cliente.
   const avisar = useRef({ onProject, onModulos })
   avisar.current = { onProject, onModulos }
+  // Ventana que origino el ultimo cambio. A esa no se le devuelve el proyecto: el configurador
+  // avisa 'project-changed' cada vez que su estado cambia, incluido al recibir 'load-project',
+  // asi que devolverselo lo haria rebotar sin fin.
+  const origenRef = useRef(null)
 
   function enviarProyectoA(ventana) {
     if (!projectRef.current || !ventana) return
@@ -95,7 +99,10 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
       if (msg.type === 'repisas:ready') enviarProyectoA(event.source)
       // Solo los cambios reales entran al estado. 'project-loaded' es el acuse de recibo de lo
       // que acabamos de mandar: tomarlo como cambio reenvia el proyecto en bucle infinito.
-      if (msg.type === 'repisas:project-changed' && msg.payload?.project) avisar.current.onProject(msg.payload.project)
+      if (msg.type === 'repisas:project-changed' && msg.payload?.project) {
+        origenRef.current = event.source
+        avisar.current.onProject(msg.payload.project)
+      }
       // El acuse si trae los modulos ya planificados, que es con lo que se arma la tabla.
       if (msg.type === 'repisas:project-loaded' && msg.payload?.modules) avisar.current.onModulos(msg.payload.modules)
     }
@@ -103,8 +110,16 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
     return () => window.removeEventListener('message', recibir)
   }, [])
 
-  // El visor chico se mantiene al dia con lo que se edita en el modal.
-  useEffect(() => { if (project) enviarProyecto(frameRef.current) }, [project])
+  // Las dos vistas se mantienen al dia con el proyecto, venga de donde venga (el modal, una
+  // cotizacion recuperada, una precarga desde la visita), menos la que lo acaba de mandar.
+  useEffect(() => {
+    if (!project) return
+    const origen = origenRef.current
+    origenRef.current = null
+    for (const frame of [frameRef.current, modalRef.current]) {
+      if (frame?.contentWindow && frame.contentWindow !== origen) enviarProyecto(frame)
+    }
+  }, [project])
 
   useEffect(() => {
     if (!ampliado) return undefined
