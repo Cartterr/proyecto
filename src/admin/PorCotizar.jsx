@@ -38,7 +38,10 @@ function SelectOrFree({ options, value, onChange, step = 0.01 }) {
 }
 
 // El configurador 3D. En local sale por el mismo origen (vite proxea /embed, /configurador y
-// /assets); en produccion se apunta al servicio con VITE_REPISAS_3D_URL.
+// /assets); en produccion es otro dominio y se apunta con VITE_REPISAS_3D_URL.
+// Si falta en un build de produccion el iframe cargaria este mismo sitio, que no sirve el
+// configurador: la tarjeta quedaria rota sin explicar por que. Mejor decirlo.
+const FALTA_URL_3D = import.meta.env.PROD && !import.meta.env.VITE_REPISAS_3D_URL
 const REPISAS_3D_URL = (import.meta.env.VITE_REPISAS_3D_URL || window.location.origin).replace(/\/$/, '')
 const REPISAS_3D_ORIGIN = new URL(REPISAS_3D_URL).origin
 const PROTOCOL = '1'
@@ -67,6 +70,11 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
   const modalRef = useRef(null)
   const projectRef = useRef(project)
   projectRef.current = project
+  // El escuchador se registra una sola vez, asi que no puede cerrar sobre las funciones de
+  // este render: onModulos arrastra la tabla de precios, y congelarla dejaba las filas del 3D
+  // valorizadas con el respaldo del bundle en vez de la planilla del cliente.
+  const avisar = useRef({ onProject, onModulos })
+  avisar.current = { onProject, onModulos }
 
   function enviarProyectoA(ventana) {
     if (!projectRef.current || !ventana) return
@@ -87,13 +95,13 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
       if (msg.type === 'repisas:ready') enviarProyectoA(event.source)
       // Solo los cambios reales entran al estado. 'project-loaded' es el acuse de recibo de lo
       // que acabamos de mandar: tomarlo como cambio reenvia el proyecto en bucle infinito.
-      if (msg.type === 'repisas:project-changed' && msg.payload?.project) onProject(msg.payload.project)
+      if (msg.type === 'repisas:project-changed' && msg.payload?.project) avisar.current.onProject(msg.payload.project)
       // El acuse si trae los modulos ya planificados, que es con lo que se arma la tabla.
-      if (msg.type === 'repisas:project-loaded' && msg.payload?.modules) onModulos(msg.payload.modules)
+      if (msg.type === 'repisas:project-loaded' && msg.payload?.modules) avisar.current.onModulos(msg.payload.modules)
     }
     window.addEventListener('message', recibir)
     return () => window.removeEventListener('message', recibir)
-  }, [onProject])
+  }, [])
 
   // El visor chico se mantiene al dia con lo que se edita en el modal.
   useEffect(() => { if (project) enviarProyecto(frameRef.current) }, [project])
@@ -114,6 +122,12 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
   return (
     <div style={{ ...styles.card, marginBottom: 14 }}>
       <div style={styles.cardLabel}>Grafica 3D</div>
+      {FALTA_URL_3D ? (
+        <div style={{ padding: '14px 12px', borderRadius: 9, border: '1.5px dashed ' + C.border, color: C.textMuted, fontSize: 13 }}>
+          Falta configurar <strong>VITE_REPISAS_3D_URL</strong> con la direccion del servicio
+          Repisas 3D. Sin eso la cotizacion se genera igual, pero sin la pagina de graficas.
+        </div>
+      ) : (
       <div style={{ position: 'relative' }}>
         {/* Al reiniciar la cotizacion el proyecto se va a null; remontar el iframe borra la
             lamina anterior, que si no se queda pegada mostrando la bodega del cliente pasado. */}
@@ -123,7 +137,8 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
           style={{ width: '100%', height: 560, border: '1.5px solid ' + C.border, borderRadius: 10, background: 'white', display: 'block' }} />
         <button type="button" onClick={() => setAmpliado(true)} style={botonEsquina}>Pantalla completa</button>
       </div>
-      {!project && (
+      )}
+      {!FALTA_URL_3D && !project && (
         <div style={{ marginTop: 8, fontSize: 12, color: C.textMuted }}>
           Abre pantalla completa para armar la bodega. Lo que dibujes ahi aparece aca y va como pagina 2 del PDF.
         </div>
@@ -168,6 +183,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   const [manualCliente, setManualCliente] = useState(saved?.manualCliente || { nombre: '', email: '', celular: '', direccion: '' })
   const [cotNum, setCotNum]               = useState(getCotNum)
   const [tablaPrecios, setTablaPrecios]   = useState(TABLA_PRECIOS)
+  const [preciosDeRespaldo, setPreciosDeRespaldo] = useState(false)
   const [repisas, setRepisas]             = useState(saved?.repisas || [repisaPorDefecto(TABLA_PRECIOS)])
   const [adNombres, setAdNombres]         = useState(saved?.adNombres || {
     retiro_orden: 'Retiro y orden de articulos',
@@ -198,7 +214,12 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   }, [visitaSeleccionada])
 
   // La planilla del cliente manda. Hasta que responda se usa el respaldo del bundle.
-  useEffect(() => { cargarTablaPrecios(apiFetch).then(setTablaPrecios) }, [])
+  useEffect(() => {
+    cargarTablaPrecios(apiFetch).then(({ tabla, respaldo }) => {
+      setTablaPrecios(tabla)
+      setPreciosDeRespaldo(respaldo)
+    })
+  }, [])
 
   useEffect(() => {
     saveState({ mode, manualCliente, repisas, adNombres, adicionales, totalInfo })
@@ -488,6 +509,12 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
       {/* Repisas */}
       <div style={{ ...styles.card, marginBottom: 14 }}>
         <div style={styles.cardLabel}>Repisas</div>
+        {preciosDeRespaldo && (
+          <div style={{ marginBottom: 8, padding: '7px 10px', borderRadius: 8, background: '#FFF6F6', border: '1.5px solid #D9534F', color: '#A33', fontSize: 12 }}>
+            No se pudo leer la planilla de precios. Estos valores vienen del respaldo del sistema
+            y pueden estar desactualizados: revisalos antes de enviar la cotizacion.
+          </div>
+        )}
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560 }}>
             <thead>

@@ -121,13 +121,16 @@ export function precioRepisa({ largoM, profM, altoM }, tabla = TABLA_PRECIOS) {
 
 // Trae la tabla viva desde la planilla del cliente. Si algo falla devuelve el respaldo, para
 // que no se pueda quedar sin cotizar por un problema de red o de permisos en Google.
+// Devuelve { tabla, respaldo }: respaldo en true avisa que la planilla no respondio y se esta
+// cotizando con la copia del bundle. Que eso sea visible importa: si no, los precios quedan
+// congelados en la foto del ultimo despliegue y nadie se entera.
 export async function cargarTablaPrecios(apiFetch) {
   try {
     const res = await apiFetch('/.netlify/functions/get-precios')
-    if (res?.ok && res.tabla?.length) return res.tabla
+    if (res?.ok && res.tabla?.length) return { tabla: res.tabla, respaldo: false }
     console.warn('get-precios sin datos, se usa el respaldo:', res?.error)
   } catch (e) {
     console.warn('get-precios fallo, se usa el respaldo:', e.message)
   }
-  return TABLA_PRECIOS
+  return { tabla: TABLA_PRECIOS, respaldo: true }
 }

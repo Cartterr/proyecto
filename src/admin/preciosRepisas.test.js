@@ -1,6 +1,23 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { TABLA_PRECIOS, precioRepisa } from './preciosRepisas.js'
+import { TABLA_PRECIOS, precioRepisa, cargarTablaPrecios } from './preciosRepisas.js'
+
+test('avisa cuando los precios vienen del respaldo y no de la planilla', async () => {
+  const dePlanilla = [{ alto: 200, prof: 40, desde: 50, hasta: 243, precio: 123000 }]
+  assert.deepEqual(
+    await cargarTablaPrecios(async () => ({ ok: true, tabla: dePlanilla })),
+    { tabla: dePlanilla, respaldo: false })
+
+  for (const respuesta of [
+    () => Promise.reject(new Error('sin red')),
+    async () => ({ ok: false, error: 'Falta PRECIOS_SHEET_ID' }),
+    async () => ({ ok: true, tabla: [] }),
+  ]) {
+    const resultado = await cargarTablaPrecios(respuesta)
+    assert.equal(resultado.respaldo, true, 'una planilla que no responde tiene que avisarse')
+    assert.equal(resultado.tabla, TABLA_PRECIOS)
+  }
+})
 
 const LARGO_MIN = 50
 const LARGO_MAX = 243
