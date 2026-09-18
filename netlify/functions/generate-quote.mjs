@@ -154,13 +154,17 @@ const baseBytes = readFileSync(join(FUNCTIONS_DIR, 'cotizacion.xlsx'))
   // Página GRÁFICA 3D: la hoja Grafica3D de la plantilla es un marco con el logo y una sola
   // imagen anclada (image8.png). Basta reemplazar esos bytes por la vista que exporta el
   // configurador; si no viene ninguna, la hoja se descarta al armar el PDF.
-  const conGrafica3d = Boolean(data.grafica3d)
-  if (conGrafica3d) {
-    const png = Buffer.from(String(data.grafica3d).replace(/^data:image\/png;base64,/, ''), 'base64')
+  // Cada vista va en su propio recuadro de la hoja; los títulos son celdas de la plantilla.
+  const VISTAS_HOJA = { isometric: 'image8.png', top: 'image9.png', entrance: 'image10.png' }
+  const vistas = data.grafica3d || {}
+  const conGrafica3d = Object.keys(VISTAS_HOJA).some(vista => vistas[vista])
+  for (const [vista, archivo] of Object.entries(VISTAS_HOJA)) {
+    if (!vistas[vista]) continue
+    const png = Buffer.from(String(vistas[vista]).replace(/^data:image\/png;base64,/, ''), 'base64')
     if (png.length < 8 || !png.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
-      throw new Error('La gráfica 3D debe ser un PNG')
+      throw new Error(`La vista ${vista} de la gráfica 3D debe ser un PNG`)
     }
-    zip.file('xl/media/image8.png', png)
+    zip.file(`xl/media/${archivo}`, png)
   }
 
   const outBytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })

@@ -263,24 +263,35 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
 
   const cliente = mode === 'visita' ? (selectedVisit || {}) : manualCliente
 
-  // Le pide al visor la lamina de vistas que va como pagina 2. El configurador la arma con el
-  // mismo render que el boton "PNG 3 Vistas", asi que no hay que adjuntar nada a mano.
+  // Medida de cada recuadro de la hoja Grafica3D, al doble para que no se vea pixelada.
+  // Se piden con estas proporciones para que entren sin deformarse.
+  const VISTAS_PDF = [
+    { view: 'isometric', width: 760, height: 558 },
+    { view: 'top', width: 556, height: 558 },
+    { view: 'entrance', width: 1316, height: 616 },
+  ]
+
+  // Le pide al visor las tres vistas que van en la pagina 2, cada una por separado: en la
+  // plantilla van en recuadros distintos y con su titulo en una celda, no dentro de la imagen.
   function pedirGrafica3d() {
     const frame = frame3dRef.current
     if (!project3d || !frame?.contentWindow) return Promise.resolve(null)
     const requestId = crypto.randomUUID()
     return new Promise(resolve => {
       function terminar(valor) { clearTimeout(reloj); window.removeEventListener('message', escuchar); resolve(valor) }
-      const reloj = setTimeout(() => terminar(null), 20000)
+      const reloj = setTimeout(() => terminar(null), 30000)
       function escuchar(event) {
         const msg = event.data
         if (event.origin !== REPISAS_3D_ORIGIN || msg?.requestId !== requestId) return
-        if (msg.type === 'repisas:export-complete') terminar(bytesABase64(msg.payload.bytes))
+        if (msg.type === 'repisas:export-complete' && msg.payload?.images) {
+          terminar(Object.fromEntries(msg.payload.images.map(i => [i.view, bytesABase64(i.bytes)])))
+        }
         if (msg.type === 'repisas:error') terminar(null)
       }
       window.addEventListener('message', escuchar)
       frame.contentWindow.postMessage({
-        type: 'repisas:export-request', version: PROTOCOL, requestId, payload: { kind: 'contact-sheet' },
+        type: 'repisas:export-request', version: PROTOCOL, requestId,
+        payload: { kind: 'quote-views', views: VISTAS_PDF },
       }, REPISAS_3D_ORIGIN)
     })
   }
