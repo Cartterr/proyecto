@@ -26,6 +26,9 @@ export default defineConfig({
       } : {}),
       ...(process.env.VITE_REPISAS_3D_PROXY ? {
         '/embed': { target: process.env.VITE_REPISAS_3D_PROXY, changeOrigin: true },
+        // El configurador completo que se abre en el modal. Cualquier ruta que no sea /embed
+        // hace que la app 3D monte su interfaz entera.
+        '/configurador': { target: process.env.VITE_REPISAS_3D_PROXY, changeOrigin: true },
         '/assets': { target: process.env.VITE_REPISAS_3D_PROXY, changeOrigin: true },
         '/generated': { target: process.env.VITE_REPISAS_3D_PROXY, changeOrigin: true },
       } : {}),

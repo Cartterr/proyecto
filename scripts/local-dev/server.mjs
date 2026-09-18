@@ -13,6 +13,26 @@ const DATA_FILE = path.join(here, 'data.json')
 const PORT = Number(process.env.LOCAL_API_PORT || 8899)
 const PUBLIC_URL = process.env.LOCAL_PUBLIC_URL || 'http://127.0.0.1:5176'
 
+// La tabla de precios sí vive en Google, así que necesitamos esas credenciales tambien en
+// local. Se copian SOLO estas claves del .env de produccion: nada de Twilio, Netlify ni la
+// clave de admin real, y el resto del entorno local queda como esta.
+const CLAVES_GOOGLE = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN', 'PRECIOS_SHEET_ID']
+const ENV_FILE = process.env.LOCAL_ENV_FILE || path.join(here, '../../.env')
+if (fs.existsSync(ENV_FILE)) {
+  for (const linea of fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/)) {
+    const i = linea.indexOf('=')
+    if (i < 1 || linea.trimStart().startsWith('#')) continue
+    const clave = linea.slice(0, i).trim()
+    if (CLAVES_GOOGLE.includes(clave) && !process.env[clave]) {
+      process.env[clave] = linea.slice(i + 1).trim().replace(/^["']|["']$/g, '')
+    }
+  }
+}
+// Planilla que publico el cliente el 17-09-2026. En produccion va como variable de entorno.
+process.env.PRECIOS_SHEET_ID = process.env.PRECIOS_SHEET_ID || '1wi6Fs3-RrK_lhobuut8rKCFBkEbVA1vBXvRRfFDB2Ws'
+// generate-quote busca la plantilla en LAMBDA_TASK_ROOT/netlify/functions; en local es el repo.
+process.env.LAMBDA_TASK_ROOT = process.env.LAMBDA_TASK_ROOT || path.join(here, '../..')
+
 process.env.ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '2003'
 process.env.REPISAS_3D_API_URL = process.env.REPISAS_3D_API_URL || 'http://127.0.0.1:3000'
 process.env.REPISAS_3D_PUBLIC_URL = PUBLIC_URL
@@ -103,15 +123,20 @@ const server = http.createServer(async (req, res) => {
   const raw = Buffer.concat(chunks).toString('utf8')
 
   try {
-    if (name === 'repisas-3d-quote') {
-      const handler = await getQuoteHandler()
-      const result = await handler({
+    // Estas rutas corren el handler real de la PR / de produccion, no una version local.
+    const handlerReal = name === 'repisas-3d-quote' ? await getQuoteHandler()
+      : name === 'get-precios' ? (await import('../../netlify/functions/get-precios.mjs')).handler
+      : name === 'generate-quote' ? (await import('../../netlify/functions/generate-quote.mjs')).handler
+      : null
+    if (handlerReal) {
+      const result = await handlerReal({
         httpMethod: req.method,
         headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k.toLowerCase(), String(v || '')])),
         body: raw,
       })
       res.writeHead(result.statusCode, { ...CORS, ...(result.headers || {}) })
-      return res.end(result.body || '')
+      // El PDF viaja en base64: Netlify lo decodifica en produccion, aca hay que hacerlo.
+      return res.end(result.isBase64Encoded ? Buffer.from(result.body, 'base64') : (result.body || ''))
     }
 
     const route = routes[name]
