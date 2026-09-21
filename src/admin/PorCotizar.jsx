@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { ADMIN_PASSWORD, DEFAULTS_REPISA, C, apiFetch, fmtDate, fmt, styles } from './utils.js'
 import { precioRepisa, filaPrecioRepisa, cargarTablaPrecios, TABLA_PRECIOS } from './preciosRepisas.js'
+import './PorCotizar.css'
 
 function repisaPorDefecto(tabla) {
   const { l, p, a } = DEFAULTS_REPISA
@@ -579,13 +580,19 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
                     <input type="number" value={r.u} step="1" min="1" onChange={e => updRep(r.id, 'u', e.target.value)} style={inputStyle} />
                   </td>
                   <td style={{ padding: '5px 4px' }}>
+                    <div className="quote-price-field">
                     <input type="number" value={r.v} step="1000" onChange={e => updRep(r.id, 'v', e.target.value)}
                       title={r.v ? '' : 'Esa combinacion de medidas no esta en la tabla de precios: ingresa el valor a mano'}
                       style={r.v ? inputStyle : { ...inputStyle, borderColor: '#D9534F', background: '#FFF6F6' }} />
                     <button type="button" disabled={actualizandoPrecio || preciosDeRespaldo || !filaPrecioRepisa({ largoM: r.l, profM: r.p, altoM: r.a }, tablaPrecios)}
-                      onClick={() => actualizarPrecio(r)} style={{ marginTop: 5, fontSize: 11, cursor: 'pointer' }}>
-                      Actualizar valor en tabla
+                      className="quote-price-save" title="Actualizar valor en tabla" aria-label="Actualizar valor en tabla"
+                      onClick={() => actualizarPrecio(r)}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12l4 4v12a2 2 0 0 1-2 2Z" />
+                        <path d="M17 21v-8H7v8M7 3v5h9V3" />
+                      </svg>
                     </button>
+                    </div>
                   </td>
                   <td style={{ padding: '5px 8px', textAlign: 'center', fontWeight: 700, color: C.orangeDark, whiteSpace: 'nowrap' }}>{fmt(r.u * r.v)}</td>
                   <td style={{ padding: '5px 4px', textAlign: 'center' }}>

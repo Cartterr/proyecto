@@ -1,0 +1,40 @@
+.quote-price-field {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.quote-price-field input {
+  min-width: 0;
+}
+
+.quote-price-save {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #858b94;
+  cursor: pointer;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.quote-price-save:hover:not(:disabled) {
+  color: #515862;
+  background: #f0f1f3;
+}
+
+.quote-price-save:focus-visible {
+  outline: 2px solid #858b94;
+  outline-offset: 2px;
+}
+
+.quote-price-save:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
