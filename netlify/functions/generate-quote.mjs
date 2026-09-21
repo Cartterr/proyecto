@@ -150,8 +150,25 @@ const baseBytes = readFileSync(join(FUNCTIONS_DIR, 'cotizacion.xlsx'))
 
   // Reescribir sheet1.xml en el zip
   zip.file('xl/worksheets/sheet1.xml', sheetXml)
+
+  // Página GRÁFICA 3D: la hoja Grafica3D de la plantilla es un marco con el logo y una sola
+  // imagen anclada (image8.png). Basta reemplazar esos bytes por la vista que exporta el
+  // configurador; si no viene ninguna, la hoja se descarta al armar el PDF.
+  // Cada vista va en su propio recuadro de la hoja; los títulos son celdas de la plantilla.
+  const VISTAS_HOJA = { isometric: 'image8.png', top: 'image9.png', entrance: 'image10.png' }
+  const vistas = data.grafica3d || {}
+  const conGrafica3d = Object.keys(VISTAS_HOJA).some(vista => vistas[vista])
+  for (const [vista, archivo] of Object.entries(VISTAS_HOJA)) {
+    if (!vistas[vista]) continue
+    const png = Buffer.from(String(vistas[vista]).replace(/^data:image\/png;base64,/, ''), 'base64')
+    if (png.length < 8 || !png.subarray(0, 8).equals(Buffer.from('89504e470d0a1a0a', 'hex'))) {
+      throw new Error(`La vista ${vista} de la gráfica 3D debe ser un PNG`)
+    }
+    zip.file(`xl/media/${archivo}`, png)
+  }
+
   const outBytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
-  return { bytes: outBytes, subtotal, iva, total }
+  return { bytes: outBytes, subtotal, iva, total, conGrafica3d }
 }
 
 // ── Conversión xlsx -> PDF vía Google Drive/Sheets (reemplaza ConvertAPI) ─────
@@ -159,7 +176,9 @@ const baseBytes = readFileSync(join(FUNCTIONS_DIR, 'cotizacion.xlsx'))
 // copia temporal al área de impresión real y la exporta a PDF; al final borra
 // el archivo temporal. No agrega costo ni credenciales nuevas: reusa el mismo
 // refresh token OAuth (scope drive.file) que ya usan create_event/upload-pdf.
-async function xlsxBufferToPdf(xlsxBuffer, fileNameBase) {
+const HOJA_GRAFICA_3D = 'Grafica3D'
+
+async function xlsxBufferToPdf(xlsxBuffer, fileNameBase, { conGrafica3d = false } = {}) {
   const auth = new google.auth.OAuth2(process.env.GOOGLE_CLIENT_ID, process.env.GOOGLE_CLIENT_SECRET)
   auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN })
   const drive = google.drive({ version: 'v3', auth })
@@ -176,12 +195,12 @@ async function xlsxBufferToPdf(xlsxBuffer, fileNameBase) {
   const fileId = tempFile.id
 
   try {
-    // La plantilla tiene 6 hojas (Hoja1 = cotización, las demás = galería,
-    // preguntas frecuentes, testimonio, etc.) que juntas forman el PDF final
-    // de varias páginas. Cada una trae "dimension" hasta la columna CB aunque
-    // su área de impresión real es mucho más chica (K3:Q<N>, según la hoja):
+    // La plantilla tiene 7 hojas (Hoja1 = cotización, Grafica3D = la simulación del proyecto,
+    // las demás = galería, preguntas frecuentes, testimonio, etc.) que juntas forman el PDF
+    // final de varias páginas, en el orden del libro. Cada una trae "dimension" hasta la
+    // columna CB aunque su área de impresión real es mucho más chica (K3:Q<N>, según la hoja):
     // si no se recorta, el export encoge el contenido real a una esquina.
-    const PRINT_AREA_ROWS = { Hoja1: 39, Hoja2: 42, Hoja4: 43, Hoja8: 43, Hoja3: 43, Hoja5: 43 }
+    const PRINT_AREA_ROWS = { Hoja1: 39, [HOJA_GRAFICA_3D]: 43, Hoja2: 42, Hoja4: 43, Hoja8: 43, Hoja3: 43, Hoja5: 43 }
 
     const meta = await sheets.spreadsheets.get({ spreadsheetId: fileId, fields: 'sheets(properties(sheetId,title))' })
     const trimRequests = []
@@ -189,6 +208,11 @@ async function xlsxBufferToPdf(xlsxBuffer, fileNameBase) {
       const rowCount = PRINT_AREA_ROWS[s.properties.title]
       if (!rowCount) continue
       const sheetId = s.properties.sheetId
+      // Cotización sin configuración 3D: fuera la página, en vez de una hoja con el marcador.
+      if (s.properties.title === HOJA_GRAFICA_3D && !conGrafica3d) {
+        trimRequests.push({ deleteSheet: { sheetId } })
+        continue
+      }
       trimRequests.push(
         { updateSheetProperties: { properties: { sheetId, gridProperties: { rowCount, columnCount: 17 } }, fields: 'gridProperties.rowCount,gridProperties.columnCount' } },
         { deleteDimension: { range: { sheetId, dimension: 'ROWS', startIndex: 0, endIndex: 2 } } },
@@ -233,8 +257,8 @@ export async function handler(event) {
 
   try {
     const data = JSON.parse(event.body || '{}')
-    const { bytes, subtotal, iva, total } = await generateXlsx(data)
-    const pdfBytes = await xlsxBufferToPdf(bytes, 'Cotizacion-' + (data.cot_num ?? Date.now()))
+    const { bytes, subtotal, iva, total, conGrafica3d } = await generateXlsx(data)
+    const pdfBytes = await xlsxBufferToPdf(bytes, 'Cotizacion-' + (data.cot_num ?? Date.now()), { conGrafica3d })
 
     return {
       statusCode: 200,

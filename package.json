@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "test": "node --test src/admin/preciosRepisas.test.js",
     "build": "vite build",
     "preview": "vite preview",
     "netlify:dev": "netlify dev",

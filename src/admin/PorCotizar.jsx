@@ -1,5 +1,11 @@
 import React, { useEffect, useState, useRef } from 'react'
 import { ADMIN_PASSWORD, DEFAULTS_REPISA, C, apiFetch, fmtDate, fmt, styles } from './utils.js'
+import { precioRepisa, cargarTablaPrecios, TABLA_PRECIOS } from './preciosRepisas.js'
+
+function repisaPorDefecto(tabla) {
+  const { l, p, a } = DEFAULTS_REPISA
+  return { ...DEFAULTS_REPISA, id: Date.now(), v: precioRepisa({ largoM: l, profM: p, altoM: a }, tabla) ?? 0 }
+}
 
 function SelectOrFree({ options, value, onChange, step = 0.01 }) {
   const [libre, setLibre] = useState(() => !options.includes(Number(value)))
@@ -31,6 +37,151 @@ function SelectOrFree({ options, value, onChange, step = 0.01 }) {
   )
 }
 
+// El configurador 3D. En local sale por el mismo origen (vite proxea /embed, /configurador y
+// /assets); en produccion es otro dominio y se apunta con VITE_REPISAS_3D_URL.
+// Si falta en un build de produccion el iframe cargaria este mismo sitio, que no sirve el
+// configurador: la tarjeta quedaria rota sin explicar por que. Mejor decirlo.
+const FALTA_URL_3D = import.meta.env.PROD && !import.meta.env.VITE_REPISAS_3D_URL
+const REPISAS_3D_URL = (import.meta.env.VITE_REPISAS_3D_URL || window.location.origin).replace(/\/$/, '')
+const REPISAS_3D_ORIGIN = new URL(REPISAS_3D_URL).origin
+const PROTOCOL = '1'
+
+function url3d(path, extra = {}) {
+  const url = new URL(path, REPISAS_3D_URL)
+  url.searchParams.set('parentOrigin', window.location.origin)
+  url.searchParams.set('protocolVersion', PROTOCOL)
+  for (const [clave, valor] of Object.entries(extra)) url.searchParams.set(clave, valor)
+  return url.toString()
+}
+
+function bytesABase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  let binario = ''
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binario += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192))
+  }
+  return btoa(binario)
+}
+
+// Visor en vivo + modal a pantalla completa con el configurador entero.
+// El proyecto viaja por postMessage: la ventana chica lo muestra, el modal lo edita.
+function Grafica3D({ project, onProject, onModulos, frameRef }) {
+  const [ampliado, setAmpliado] = useState(false)
+  const modalRef = useRef(null)
+  const projectRef = useRef(project)
+  projectRef.current = project
+  // El escuchador se registra una sola vez, asi que no puede cerrar sobre las funciones de
+  // este render: onModulos arrastra la tabla de precios, y congelarla dejaba las filas del 3D
+  // valorizadas con el respaldo del bundle en vez de la planilla del cliente.
+  const avisar = useRef({ onProject, onModulos })
+  avisar.current = { onProject, onModulos }
+  // Ventana que origino el ultimo cambio. A esa no se le devuelve el proyecto: el configurador
+  // avisa 'project-changed' cada vez que su estado cambia, incluido al recibir 'load-project',
+  // asi que devolverselo lo haria rebotar sin fin.
+  const origenRef = useRef(null)
+
+  function enviarProyectoA(ventana) {
+    if (!projectRef.current || !ventana) return
+    ventana.postMessage({
+      type: 'repisas:load-project', version: PROTOCOL,
+      requestId: crypto.randomUUID(), payload: { project: projectRef.current },
+    }, REPISAS_3D_ORIGIN)
+  }
+  const enviarProyecto = frame => enviarProyectoA(frame?.contentWindow)
+
+  useEffect(() => {
+    function recibir(event) {
+      if (event.origin !== REPISAS_3D_ORIGIN) return
+      const msg = event.data
+      if (msg?.version !== PROTOCOL) return
+      // Cada vista (miniatura y modal) avisa cuando monta; ahi recien tiene sentido mandarle
+      // el proyecto. Se le contesta a la que aviso, no a una fija.
+      if (msg.type === 'repisas:ready') enviarProyectoA(event.source)
+      // Solo los cambios reales entran al estado. 'project-loaded' es el acuse de recibo de lo
+      // que acabamos de mandar: tomarlo como cambio reenvia el proyecto en bucle infinito.
+      if (msg.type === 'repisas:project-changed' && msg.payload?.project) {
+        origenRef.current = event.source
+        avisar.current.onProject(msg.payload.project)
+      }
+      // El acuse si trae los modulos ya planificados, que es con lo que se arma la tabla.
+      if (msg.type === 'repisas:project-loaded' && msg.payload?.modules) avisar.current.onModulos(msg.payload.modules)
+    }
+    window.addEventListener('message', recibir)
+    return () => window.removeEventListener('message', recibir)
+  }, [])
+
+  // Las dos vistas se mantienen al dia con el proyecto, venga de donde venga (el modal, una
+  // cotizacion recuperada, una precarga desde la visita), menos la que lo acaba de mandar.
+  useEffect(() => {
+    if (!project) return
+    const origen = origenRef.current
+    origenRef.current = null
+    for (const frame of [frameRef.current, modalRef.current]) {
+      if (frame?.contentWindow && frame.contentWindow !== origen) enviarProyecto(frame)
+    }
+  }, [project])
+
+  useEffect(() => {
+    if (!ampliado) return undefined
+    function cerrarConEsc(e) { if (e.key === 'Escape') setAmpliado(false) }
+    window.addEventListener('keydown', cerrarConEsc)
+    return () => window.removeEventListener('keydown', cerrarConEsc)
+  }, [ampliado])
+
+  const botonEsquina = {
+    position: 'absolute', top: 10, right: 10, zIndex: 2, cursor: 'pointer',
+    background: 'white', border: '1.5px solid ' + C.border, borderRadius: 8,
+    padding: '6px 12px', fontSize: 12, fontWeight: 700, color: C.textSub, fontFamily: 'inherit',
+  }
+
+  return (
+    <div style={{ ...styles.card, marginBottom: 14 }}>
+      <div style={styles.cardLabel}>Grafica 3D</div>
+      {FALTA_URL_3D ? (
+        <div style={{ padding: '14px 12px', borderRadius: 9, border: '1.5px dashed ' + C.border, color: C.textMuted, fontSize: 13 }}>
+          Falta configurar <strong>VITE_REPISAS_3D_URL</strong> con la direccion del servicio
+          Repisas 3D. Sin eso la cotizacion se genera igual, pero sin la pagina de graficas.
+        </div>
+      ) : (
+      <div style={{ position: 'relative' }}>
+        {/* Al reiniciar la cotizacion el proyecto se va a null; remontar el iframe borra la
+            lamina anterior, que si no se queda pegada mostrando la bodega del cliente pasado. */}
+        <iframe key={project ? 'con-proyecto' : 'sin-proyecto'}
+          ref={frameRef} src={url3d('/embed', { mode: 'quote' })} title="Vista 3D de la cotizacion"
+          onLoad={() => enviarProyecto(frameRef.current)}
+          style={{ width: '100%', height: 560, border: '1.5px solid ' + C.border, borderRadius: 10, background: 'white', display: 'block' }} />
+        <button type="button" onClick={() => setAmpliado(true)} style={botonEsquina}>Pantalla completa</button>
+      </div>
+      )}
+      {!FALTA_URL_3D && !project && (
+        <div style={{ marginTop: 8, fontSize: 12, color: C.textMuted }}>
+          Abre pantalla completa para armar la bodega. Lo que dibujes ahi aparece aca y va como pagina 2 del PDF.
+        </div>
+      )}
+
+      {ampliado && (
+        <div onClick={e => { if (e.target === e.currentTarget) setAmpliado(false) }}
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(20,16,12,.55)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            animation: 'dmFade .18s ease-out',
+          }}>
+          <style>{'@keyframes dmFade{from{opacity:0}to{opacity:1}}'}</style>
+          <div style={{ position: 'relative', width: '92vw', height: '90vh', background: 'white', borderRadius: 14, overflow: 'hidden', boxShadow: '0 24px 60px rgba(0,0,0,.35)' }}>
+            <iframe ref={modalRef} src={url3d('/configurador')} title="Configurador Repisas 3D"
+              onLoad={() => enviarProyecto(modalRef.current)}
+              style={{ width: '100%', height: '100%', border: 0, display: 'block' }} />
+            <button type="button" onClick={() => setAmpliado(false)} aria-label="Cerrar"
+              style={{ ...botonEsquina, width: 34, height: 34, padding: 0, borderRadius: '50%', fontSize: 17, lineHeight: '30px' }}>
+              x
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 const STORAGE_KEY = 'dm_cotizador_state'
 const COT_NUM_KEY = 'dm_cot_num'
 function loadState() { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null') } catch { return null } }
@@ -46,7 +197,9 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   const [selectedVisit, setSelectedVisit] = useState(null)
   const [manualCliente, setManualCliente] = useState(saved?.manualCliente || { nombre: '', email: '', celular: '', direccion: '' })
   const [cotNum, setCotNum]               = useState(getCotNum)
-  const [repisas, setRepisas]             = useState(saved?.repisas || [{ ...DEFAULTS_REPISA, id: Date.now() }])
+  const [tablaPrecios, setTablaPrecios]   = useState(TABLA_PRECIOS)
+  const [preciosDeRespaldo, setPreciosDeRespaldo] = useState(false)
+  const [repisas, setRepisas]             = useState(saved?.repisas || [repisaPorDefecto(TABLA_PRECIOS)])
   const [adNombres, setAdNombres]         = useState(saved?.adNombres || {
     retiro_orden: 'Retiro y orden de articulos',
     retiro_basura: 'Retiro de basura',
@@ -59,6 +212,10 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
     qty_cajas: 0,         precio_cajas: 15000,
     qty_bici: 0,          precio_bici: 20000,
   })
+  // Proyecto que se arma en el configurador 3D. Va como pagina 2 del PDF.
+  // No se guarda en localStorage a proposito: vale solo para esta cotizacion.
+  const [project3d, setProject3d] = useState(null)
+  const frame3dRef = useRef(null)
   const [generating, setGenerating] = useState(false)
   const [pdfUrl, setPdfUrl]         = useState(null)
   const [pdfBlob, setPdfBlob]       = useState(null)
@@ -71,6 +228,14 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
     if (visitaSeleccionada) { setMode('visita'); setSelectedVisit(visitaSeleccionada) }
   }, [visitaSeleccionada])
 
+  // La planilla del cliente manda. Hasta que responda se usa el respaldo del bundle.
+  useEffect(() => {
+    cargarTablaPrecios(apiFetch).then(({ tabla, respaldo }) => {
+      setTablaPrecios(tabla)
+      setPreciosDeRespaldo(respaldo)
+    })
+  }, [])
+
   useEffect(() => {
     saveState({ mode, manualCliente, repisas, adNombres, adicionales, totalInfo })
   }, [mode, manualCliente, repisas, adNombres, adicionales, totalInfo])
@@ -80,10 +245,11 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
     setMode('visita')
     setManualCliente({ nombre: '', email: '', celular: '', direccion: '' })
     setCotNum(newNum)
-    setRepisas([{ ...DEFAULTS_REPISA, id: Date.now() }])
+    setRepisas([repisaPorDefecto(tablaPrecios)])
     setAdNombres({ retiro_orden: 'Retiro y orden de articulos', retiro_basura: 'Retiro de basura', cajas: 'Cajas organizadoras', bici: 'Soporte bicicleta / ski' })
     setAdicionales({ qty_retiro_orden: 0, precio_retiro_orden: 40000, qty_retiro_basura: 0, precio_retiro_basura: 30000, qty_cajas: 0, precio_cajas: 15000, qty_bici: 0, precio_bici: 20000 })
     setTotalInfo({ subtotal: 0, iva: 0, total: 0 })
+    setProject3d(null)
     setPdfUrl(null); setPdfBlob(null); setAutoSaved(false); setError('')
     setSelectedVisit(null); saveState({})
   }
@@ -101,19 +267,78 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
 
   function addRepisa() {
     if (repisas.length >= 4) return
-    setRepisas(prev => [...prev, { ...DEFAULTS_REPISA, id: Date.now() }])
+    setRepisas(prev => [...prev, repisaPorDefecto(tablaPrecios)])
   }
   function updRep(id, field, val) {
-    setRepisas(prev => prev.map(r => r.id === id ? { ...r, [field]: parseFloat(String(val).replace(',', '.')) || 0 } : r))
+    setRepisas(prev => prev.map(r => {
+      if (r.id !== id) return r
+      const next = { ...r, [field]: parseFloat(String(val).replace(',', '.')) || 0 }
+      // El valor sale solo de la tabla al cambiar las medidas. Si se edita a mano manda lo
+      // escrito, y vale solo para esta cotizacion: la tabla no se toca.
+      if (field !== 'v') next.v = precioRepisa({ largoM: next.l, profM: next.p, altoM: next.a }, tablaPrecios) ?? 0
+      return next
+    }))
   }
   function removeRepisa(id) { setRepisas(prev => prev.filter(r => r.id !== id)) }
 
+  // La gráfica 3D manda sobre las medidas: cada módulo del plano es una fila, y el valor sale
+  // de la tabla de precios. Es lo que pidió el cliente en la reunión (04:27 y 22:32).
+  // El largo del PDF va en metros, el configurador trabaja en centímetros.
+  function filasDesde3d(modulos) {
+    if (!modulos?.length) return
+    setRepisas(modulos.slice(0, 4).map((m, i) => {
+      const medidas = { largoM: m.lengthCm / 100, profM: m.depthCm / 100, altoM: m.heightCm / 100 }
+      return {
+        id: Date.now() + i,
+        l: medidas.largoM, p: medidas.profM, a: medidas.altoM,
+        n: m.levels, u: m.units,
+        v: precioRepisa(medidas, tablaPrecios) ?? 0,
+      }
+    }))
+  }
+
   const cliente = mode === 'visita' ? (selectedVisit || {}) : manualCliente
+
+  // Medida de cada recuadro de la hoja Grafica3D, al doble para que no se vea pixelada.
+  // Se piden con estas proporciones para que entren sin deformarse.
+  const VISTAS_PDF = [
+    { view: 'isometric', width: 760, height: 558 },
+    { view: 'top', width: 556, height: 558 },
+    { view: 'entrance', width: 1316, height: 616 },
+  ]
+
+  // Le pide al visor las tres vistas que van en la pagina 2, cada una por separado: en la
+  // plantilla van en recuadros distintos y con su titulo en una celda, no dentro de la imagen.
+  function pedirGrafica3d() {
+    const frame = frame3dRef.current
+    if (!project3d || !frame?.contentWindow) return Promise.resolve(null)
+    const requestId = crypto.randomUUID()
+    return new Promise(resolve => {
+      function terminar(valor) { clearTimeout(reloj); window.removeEventListener('message', escuchar); resolve(valor) }
+      const reloj = setTimeout(() => terminar(null), 30000)
+      function escuchar(event) {
+        const msg = event.data
+        if (event.origin !== REPISAS_3D_ORIGIN || msg?.requestId !== requestId) return
+        if (msg.type === 'repisas:export-complete' && msg.payload?.images) {
+          terminar(Object.fromEntries(msg.payload.images.map(i => [i.view, bytesABase64(i.bytes)])))
+        }
+        if (msg.type === 'repisas:error') terminar(null)
+      }
+      window.addEventListener('message', escuchar)
+      frame.contentWindow.postMessage({
+        type: 'repisas:export-request', version: PROTOCOL, requestId,
+        payload: { kind: 'quote-views', views: VISTAS_PDF },
+      }, REPISAS_3D_ORIGIN)
+    })
+  }
 
   async function handleGenerar() {
     if (mode === 'visita' && !selectedVisit) return
     if (mode === 'manual' && !manualCliente.nombre.trim()) return setError('Ingresa el nombre del cliente')
     setGenerating(true); setError(''); setPdfUrl(null); setAutoSaved(false)
+
+    const grafica3d = await pedirGrafica3d()
+    if (project3d && !grafica3d) setError('No se pudo generar la vista 3D: la cotizacion sale sin esa pagina')
 
     const t = calcTotales()
     setTotalInfo(t)
@@ -127,6 +352,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
       email:     (cliente.email || '').toUpperCase(),
       repisas:   repisas.map(r => ({ largo: r.l, prof: r.p, alto: r.a, niveles: r.n, unidades: r.u, valor: r.v })),
       ...adicionales,
+      ...(grafica3d ? { grafica3d } : {}),
     }
 
     try {
@@ -298,6 +524,12 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
       {/* Repisas */}
       <div style={{ ...styles.card, marginBottom: 14 }}>
         <div style={styles.cardLabel}>Repisas</div>
+        {preciosDeRespaldo && (
+          <div style={{ marginBottom: 8, padding: '7px 10px', borderRadius: 8, background: '#FFF6F6', border: '1.5px solid #D9534F', color: '#A33', fontSize: 12 }}>
+            No se pudo leer la planilla de precios. Estos valores vienen del respaldo del sistema
+            y pueden estar desactualizados: revisalos antes de enviar la cotizacion.
+          </div>
+        )}
         <div style={{ overflowX: 'auto' }}>
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560 }}>
             <thead>
@@ -326,7 +558,9 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
                     <input type="number" value={r.u} step="1" min="1" onChange={e => updRep(r.id, 'u', e.target.value)} style={inputStyle} />
                   </td>
                   <td style={{ padding: '5px 4px' }}>
-                    <input type="number" value={r.v} step="1000" onChange={e => updRep(r.id, 'v', e.target.value)} style={inputStyle} />
+                    <input type="number" value={r.v} step="1000" onChange={e => updRep(r.id, 'v', e.target.value)}
+                      title={r.v ? '' : 'Esa combinacion de medidas no esta en la tabla de precios: ingresa el valor a mano'}
+                      style={r.v ? inputStyle : { ...inputStyle, borderColor: '#D9534F', background: '#FFF6F6' }} />
                   </td>
                   <td style={{ padding: '5px 8px', textAlign: 'center', fontWeight: 700, color: C.orangeDark, whiteSpace: 'nowrap' }}>{fmt(r.u * r.v)}</td>
                   <td style={{ padding: '5px 4px', textAlign: 'center' }}>
@@ -347,6 +581,8 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
           </button>
         )}
       </div>
+
+      <Grafica3D project={project3d} onProject={setProject3d} onModulos={filasDesde3d} frameRef={frame3dRef} />
 
       {/* Adicionales */}
       <div style={{ ...styles.card, marginBottom: 14 }}>
