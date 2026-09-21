@@ -20,9 +20,11 @@ function numeric(value, fallback = 0) {
 // Deterministic page geometry. No network, browser or office installation is required.
 export async function generateQuotePdf(data, { now = new Date(), functionsDir = join(process.env.LAMBDA_TASK_ROOT || process.cwd(), 'netlify/functions') } = {}) {
   const rows = (data.repisas || [data.repisa1, data.repisa2].filter(Boolean)).map(r => ({
+    kind: r.kind, label: String(r.label || 'Rack completo').slice(0, 90),
     largo: numeric(r.largo), prof: numeric(r.prof), alto: numeric(r.alto), niveles: numeric(r.niveles), unidades: numeric(r.unidades), valor: numeric(r.valor),
   }));
   if (rows.length > 100) throw new Error('Máximo 100 repisas por cotización');
+  if (rows.some(r => r.kind === 'rack' && (!Number.isSafeInteger(r.valor) || r.valor <= 0))) throw new Error('Cada rack requiere un precio neto entero positivo');
   const extras = services.map(([key, title, price, description]) => ({ key, title, description, qty: numeric(data[`qty_${key}`]), price: numeric(data[`precio_${key}`], price) }));
   const subtotal = rows.reduce((s,r) => s + r.unidades*r.valor, 0) + extras.reduce((s,r) => s+r.qty*r.price, 0);
   const iva = Math.round(subtotal * .19), total = subtotal + iva;
@@ -53,13 +55,14 @@ export async function generateQuotePdf(data, { now = new Date(), functionsDir = 
   }
   let y=243;
   function tableHeader() {
-    text('Repisas',40,y,515,18,C.orange,'Times-Bold'); y+=30;
+    text(rows.some(r => r.kind === 'rack') ? 'Muebles' : 'Repisas',40,y,515,18,C.orange,'Times-Bold'); y+=30;
     doc.rect(40,y-5,515,25).fill(C.box);
     ['LARGO','PROFUND.','ALTO','NIVELES','UDS.','VALOR','TOTAL'].forEach((v,i)=>text(v,[46,118,191,252,320,377,465][i],y,80,8,C.muted,'Helvetica-Bold')); y+=28;
   }
   tableHeader();
   for(const r of rows) {
-    if(y>660) { page('Repisas (continuación)'); y=166; tableHeader(); }
+    if(y>640) { page('Muebles (continuación)'); y=166; tableHeader(); }
+    if(r.kind === 'rack') { text(`${r.label} · cajas incluidas`,46,y,500,10,C.ink,'Helvetica-Bold'); y+=20; }
     [r.largo+' m',r.prof+' m',r.alto+' m',r.niveles,r.unidades,money(r.valor),money(r.valor*r.unidades)].forEach((v,i)=>text(v,[46,118,191,252,320,377,465][i],y,87,10));
     y+=30;rule(y-8);
   }

@@ -2,7 +2,9 @@
 
 ## Qué cambia
 
-- Cada fila permite **Actualizar valor en tabla**. Editar el campo de precio sigue afectando solamente a esa cotización hasta pulsar el botón y confirmar el rango.
+- Cada fila de repisa permite **Actualizar valor en tabla** con un icono gris de guardado. Editar el campo de precio sigue afectando solamente a esa cotización hasta pulsar el botón y confirmar el rango.
+- Los racks completos llegan como productos independientes, con nombre de modelo, medidas fijas y cajas incluidas. Su precio neto es manual: no se consulta ni modifica la tabla de repisas. Se conserva al mover/girar el mismo modelo; cambiar el modelo reinicia el precio. No se permite generar un PDF con un rack sin precio positivo.
+- La sincronización elimina las filas de muebles retirados, incluso el último. El PDF y la cotización guardada conservan la descripción y el tipo de producto. Las medidas del rack también son de solo lectura al editar una cotización guardada.
 - La confirmación identifica alto, profundidad total y rango de largos. La API relee la tabla, rechaza rangos ambiguos o precios previamente modificados y verifica la celda después de escribir.
 - La profundidad comercial incluye los dos pilares: 48 cm corresponden a 40 cm útiles en la tabla.
 - No se escriben precios cuando la tabla remota no está disponible. Las cotizaciones guardadas no se recalculan.
@@ -35,6 +37,7 @@ Colocar este repositorio en `erp` y el configurador en la carpeta vecina `config
 4. Abrir `http://127.0.0.1:5176/admin`. La contraseña de demostración está en `scripts/local-dev/server.mjs`.
 
 Si el configurador está en otra ubicación, definir `REPISAS_CONFIGURATOR_DIR` con esa ruta antes de ejecutar el script. Se necesitan libres los puertos 3000, 8899 y 5176. Ctrl+C cierra los procesos que inició el lanzador.
+Para un túnel temporal existente, definir `LOCAL_PUBLIC_URL` antes del arranque: así los enlaces locales a PDFs usan la misma dirección de prueba.
 
 Visitas, cotizaciones, tabla de precios y PDFs se guardan localmente. No se cargan credenciales de producción, no se escribe en Google y no se envían mensajes. Los datos de prueba viven en `scripts/local-dev/data.json` y `scripts/local-dev/pdfs/`, ignorados por Git.
 

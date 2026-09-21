@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test src/admin/preciosRepisas.test.js netlify/functions/lib/*.test.mjs",
+    "test": "node --test src/admin/*.test.js netlify/functions/lib/*.test.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "netlify:dev": "netlify dev",

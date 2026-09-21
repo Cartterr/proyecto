@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef } from 'react'
 import { ADMIN_PASSWORD, DEFAULTS_REPISA, C, apiFetch, fmtDate, fmt, styles } from './utils.js'
 import { precioRepisa, filaPrecioRepisa, cargarTablaPrecios, TABLA_PRECIOS } from './preciosRepisas.js'
 import './PorCotizar.css'
+import { filasDeModulos, productoCotizacion } from './modulosCotizacion.js'
 
 function repisaPorDefecto(tabla) {
   const { l, p, a } = DEFAULTS_REPISA
@@ -286,6 +287,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   function removeRepisa(id) { setRepisas(prev => prev.filter(r => r.id !== id)) }
 
   async function actualizarPrecio(r) {
+    if (r.kind === 'rack') return
     const fila = filaPrecioRepisa({ largoM: r.l, profM: r.p, altoM: r.a }, tablaPrecios)
     if (!fila || preciosDeRespaldo || actualizandoPrecio) return
     if (!Number.isSafeInteger(r.v) || r.v <= 0) { setMensajePrecio('Ingresa un precio entero positivo.'); return }
@@ -304,16 +306,8 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   // de la tabla de precios. Es lo que pidió el cliente en la reunión (04:27 y 22:32).
   // El largo del PDF va en metros, el configurador trabaja en centímetros.
   function filasDesde3d(modulos) {
-    if (!modulos?.length) return
-    setRepisas(modulos.map((m, i) => {
-      const medidas = { largoM: m.lengthCm / 100, profM: m.depthCm / 100, altoM: m.heightCm / 100 }
-      return {
-        id: Date.now() + i,
-        l: medidas.largoM, p: medidas.profM, a: medidas.altoM,
-        n: m.levels, u: m.units,
-        v: precioRepisa(medidas, tablaPrecios) ?? 0,
-      }
-    }))
+    if (!Array.isArray(modulos)) return
+    setRepisas(prev => filasDeModulos(modulos, prev, tablaPrecios))
   }
 
   const cliente = mode === 'visita' ? (selectedVisit || {}) : manualCliente
@@ -353,6 +347,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
   }
 
   async function handleGenerar() {
+    if (repisas.some(r => r.kind === 'rack' && (!Number.isSafeInteger(r.v) || r.v <= 0))) return setError('Ingresa el precio neto de cada rack completo antes de generar la cotización.')
     if (mode === 'visita' && !selectedVisit) return
     if (mode === 'manual' && !manualCliente.nombre.trim()) return setError('Ingresa el nombre del cliente')
     setGenerating(true); setError(''); setPdfUrl(null); setAutoSaved(false)
@@ -374,7 +369,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
       rut: '',
       telefono:  cliente.celular || cliente.telefono || '',
       email:     (cliente.email || '').toUpperCase(),
-      repisas:   repisas.map(r => ({ largo: r.l, prof: r.p, alto: r.a, niveles: r.n, unidades: r.u, valor: r.v })),
+      repisas:   repisas.map(productoCotizacion),
       ...adicionales,
       ...(grafica3d ? { grafica3d } : {}),
     }
@@ -427,7 +422,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
           iva:         finalTotals.iva,
           total:       finalTotals.total,
           notas: '', status: 'por confirmar',
-          repisas:     repisas.map(r => ({ largo: r.l, prof: r.p, alto: r.a, niveles: r.n, unidades: r.u, valor: r.v })),
+          repisas:     repisas.map(productoCotizacion),
           adicionales,
           pdfUrl:      uploadedPdfUrl,
         }),
@@ -545,7 +540,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
 
       {/* Repisas */}
       <div style={{ ...styles.card, marginBottom: 14 }}>
-        <div style={styles.cardLabel}>Repisas</div>
+        <div style={styles.cardLabel}>{repisas.some(r => r.kind === 'rack') ? 'Muebles' : 'Repisas'}</div>
         {preciosDeRespaldo && (
           <div style={{ marginBottom: 8, padding: '7px 10px', borderRadius: 8, background: '#FFF6F6', border: '1.5px solid #D9534F', color: '#A33', fontSize: 12 }}>
             No se pudo leer la planilla de precios. Estos valores vienen del respaldo del sistema
@@ -556,7 +551,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, minWidth: 560 }}>
             <thead>
               <tr style={{ background: C.sidebar }}>
-                {['Largo (m)', 'Prof. (m)', 'Alto (m)', 'Niveles', 'Unidades', 'Valor ($)', 'Total', ''].map(h => (
+                {['Producto', 'Largo (m)', 'Prof. (m)', 'Alto (m)', 'Niveles', 'Unidades', 'Valor ($)', 'Total', ''].map(h => (
                   <th key={h} style={{ padding: '9px 8px', fontWeight: 700, fontSize: 11, color: 'rgba(255,255,255,.7)', textAlign: 'center', letterSpacing: .5 }}>{h}</th>
                 ))}
               </tr>
@@ -564,39 +559,40 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
             <tbody>
               {repisas.map((r, idx) => (
                 <tr key={r.id} style={{ background: idx % 2 === 0 ? 'white' : '#FAFAFA' }}>
+                  <td style={{ padding: '5px 8px', minWidth: 145 }}>{r.kind === 'rack' ? <>{r.label}<small style={{ display: 'block', color: C.textMuted }}>Cajas incluidas · precio propio</small></> : 'Repisa'}</td>
                   <td style={{ padding: '5px 4px' }}>
-                    <input type="number" value={r.l} step="0.01" onChange={e => updRep(r.id, 'l', e.target.value)} style={inputStyle} />
+                    <input type="number" readOnly={r.kind === 'rack'} value={r.l} step="0.01" onChange={e => updRep(r.id, 'l', e.target.value)} style={inputStyle} />
                   </td>
                   <td style={{ padding: '5px 4px', minWidth: 90 }}>
-                    <SelectOrFree options={[0.28,0.38,0.48,0.68]} value={r.p} onChange={v => updRep(r.id, 'p', v)} step={0.01} />
+                    {r.kind === 'rack' ? r.p : <SelectOrFree options={[0.28,0.38,0.48,0.68]} value={r.p} onChange={v => updRep(r.id, 'p', v)} step={0.01} />}
                   </td>
                   <td style={{ padding: '5px 4px', minWidth: 90 }}>
-                    <SelectOrFree options={[2,2.5,3]} value={r.a} onChange={v => updRep(r.id, 'a', v)} step={0.1} />
+                    {r.kind === 'rack' ? r.a : <SelectOrFree options={[2,2.5,3]} value={r.a} onChange={v => updRep(r.id, 'a', v)} step={0.1} />}
                   </td>
                   <td style={{ padding: '5px 4px', minWidth: 80 }}>
-                    <SelectOrFree options={[4,5,6]} value={r.n} onChange={v => updRep(r.id, 'n', v)} step={1} />
+                    {r.kind === 'rack' ? r.n : <SelectOrFree options={[4,5,6]} value={r.n} onChange={v => updRep(r.id, 'n', v)} step={1} />}
                   </td>
                   <td style={{ padding: '5px 4px' }}>
-                    <input type="number" value={r.u} step="1" min="1" onChange={e => updRep(r.id, 'u', e.target.value)} style={inputStyle} />
+                    <input type="number" readOnly={r.kind === 'rack'} value={r.u} step="1" min="1" onChange={e => updRep(r.id, 'u', e.target.value)} style={inputStyle} />
                   </td>
                   <td style={{ padding: '5px 4px' }}>
                     <div className="quote-price-field">
                     <input type="number" value={r.v} step="1000" onChange={e => updRep(r.id, 'v', e.target.value)}
-                      title={r.v ? '' : 'Esa combinacion de medidas no esta en la tabla de precios: ingresa el valor a mano'}
-                      style={r.v ? inputStyle : { ...inputStyle, borderColor: '#D9534F', background: '#FFF6F6' }} />
-                    <button type="button" disabled={actualizandoPrecio || preciosDeRespaldo || !filaPrecioRepisa({ largoM: r.l, profM: r.p, altoM: r.a }, tablaPrecios)}
+                      title={r.kind === 'rack' ? 'Precio neto del rack completo, con cajas incluidas' : r.v ? '' : 'Esa combinacion de medidas no esta en la tabla de precios: ingresa el valor a mano'}
+                      style={r.v ? inputStyle : { ...inputStyle, border: '1.5px solid #D9534F', background: '#FFF6F6' }} />
+                    {r.kind !== 'rack' && <button type="button" disabled={actualizandoPrecio || preciosDeRespaldo || !filaPrecioRepisa({ largoM: r.l, profM: r.p, altoM: r.a }, tablaPrecios)}
                       className="quote-price-save" title="Actualizar valor en tabla" aria-label="Actualizar valor en tabla"
                       onClick={() => actualizarPrecio(r)}>
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                         <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h12l4 4v12a2 2 0 0 1-2 2Z" />
                         <path d="M17 21v-8H7v8M7 3v5h9V3" />
                       </svg>
-                    </button>
+                    </button>}
                     </div>
                   </td>
                   <td style={{ padding: '5px 8px', textAlign: 'center', fontWeight: 700, color: C.orangeDark, whiteSpace: 'nowrap' }}>{fmt(r.u * r.v)}</td>
                   <td style={{ padding: '5px 4px', textAlign: 'center' }}>
-                    {repisas.length > 1 && (
+                    {r.kind !== 'rack' && repisas.length > 1 && (
                       <button onClick={() => removeRepisa(r.id)}
                         style={{ background: 'none', border: '1.5px solid ' + C.border, borderRadius: 6, width: 28, height: 28, cursor: 'pointer', color: C.textMuted, fontSize: 15, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>x</button>
                     )}

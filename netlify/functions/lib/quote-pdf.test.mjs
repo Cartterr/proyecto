@@ -2,6 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import pdf from 'pdf-parse/lib/pdf-parse.js';
 import { generateQuotePdf } from './quote-pdf.mjs';
+test('rack description and own price appear in PDF; missing rack price is rejected',async()=>{
+  const rack={kind:'rack',label:'Rack 6 cajas',largo:1.188288,prof:.653213,alto:1.332,niveles:3,unidades:1,valor:150000};
+  const result=await generateQuotePdf({repisas:[rack]});
+  assert.equal(result.total,178500);
+  assert.ok((await pdf(result.bytes)).text.includes('Rack 6 cajas'));
+  await assert.rejects(()=>generateQuotePdf({repisas:[{...rack,valor:0}]}),/precio neto/);
+});
 test('five pages, correct net/VAT totals and no placeholder photos',async()=>{
   const result=await generateQuotePdf({cot_num:1443,nombre:'CLIENTE PRUEBA',repisas:[{largo:2.4,prof:.48,alto:2,niveles:4,unidades:1,valor:110000},{largo:.72,prof:.68,alto:2,niveles:4,unidades:1,valor:70000}]});
   assert.equal(result.total,214200);

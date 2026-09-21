@@ -4,7 +4,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const erp=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 const configurator=resolve(process.env.REPISAS_CONFIGURATOR_DIR || resolve(erp,'../configurator'));
-const publicUrl='http://127.0.0.1:5176';
+const publicUrl=process.env.LOCAL_PUBLIC_URL || 'http://127.0.0.1:5176';
 const children=[];
 function start(cwd,args,env={}) {
   const child=spawn(process.execPath,args,{cwd,env:{...process.env,...env},stdio:'inherit',windowsHide:true});
