@@ -111,12 +111,16 @@ const PILAR_CM = 4
 // Precio neto de UNA repisa, o null si esa combinacion no esta en la tabla.
 // Medidas en metros, como las guarda la cotizacion.
 export function precioRepisa({ largoM, profM, altoM }, tabla = TABLA_PRECIOS) {
+  return filaPrecioRepisa({ largoM, profM, altoM }, tabla)?.precio ?? null
+}
+
+export function filaPrecioRepisa({ largoM, profM, altoM }, tabla = TABLA_PRECIOS) {
   const largo = Math.round(largoM * 100)
   const prof = Math.round(profM * 100) - PILAR_CM * 2
   const alto = Math.round(altoM * 100)
   const fila = tabla.find(f =>
     f.alto === alto && f.prof === prof && largo >= f.desde && largo <= f.hasta)
-  return fila ? fila.precio : null
+  return fila || null
 }
 
 // Trae la tabla viva desde la planilla del cliente. Si algo falla devuelve el respaldo, para
