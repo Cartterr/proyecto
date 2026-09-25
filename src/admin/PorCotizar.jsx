@@ -158,7 +158,7 @@ function Grafica3D({ project, onProject, onModulos, frameRef }) {
       )}
       {!FALTA_URL_3D && !project && (
         <div style={{ marginTop: 8, fontSize: 12, color: C.textMuted }}>
-          Abre pantalla completa para armar la bodega. Lo que dibujes ahi aparece aca y va como pagina 2 del PDF.
+          Abre pantalla completa para armar la bodega. Lo que dibujes ahi aparece aca y sus vistas isometrica y en planta van en la pagina 1 del PDF.
         </div>
       )}
 
@@ -217,7 +217,7 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
     qty_cajas: 0,         precio_cajas: 15000,
     qty_bici: 0,          precio_bici: 20000,
   })
-  // Proyecto que se arma en el configurador 3D. Va como pagina 2 del PDF.
+  // Proyecto que se arma en el configurador 3D. Sus vistas van en la pagina 1 del PDF.
   // Mantener el plano junto al borrador evita perderlo al cambiar entre móvil y escritorio.
   const [project3d, setProject3d] = useState(saved?.project3d || null)
   const frame3dRef = useRef(null)
