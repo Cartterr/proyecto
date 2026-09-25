@@ -1,20 +1,35 @@
 import PDFDocument from 'pdfkit';
-import JSZip from 'jszip';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const C = { paper: '#FBF7EE', ink: '#534633', muted: '#8D7A61', orange: '#BC641C', line: '#DFCFB3', box: '#F3EAD8' };
+// Layout and palette follow Maxi's design (Cotizacion_1443, 25-09-2026), Letter size.
+const C = { brown: '#5B3A28', ink: '#2E241C', body: '#4A3D2E', muted: '#8A7A66', faint: '#9A8B76', card: '#F4F2EB', line: '#E6E1D8', amber: '#FBEFDB', amberLine: '#D8A341', amberInk: '#8A5A12', head: '#F0E6DA' };
+const L = 42, R = 570, W = R - L, FOOT = 745;
 const money = value => '$' + Math.round(value).toLocaleString('es-CL');
+const metres = value => value.toLocaleString('es-CL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' m';
 const services = [
-  ['retiro_orden', 'Retiro y orden de artículos', 40000, 'Retiramos tus artículos y los reordenamos después de instalar las repisas. Sin este servicio, el espacio debe estar despejado.'],
-  ['retiro_basura', 'Retiro de basura', 30000, 'Retiramos muebles, cajas y artículos que ya no necesitas. Consulta el alcance y la disponibilidad según tu comuna.'],
-  ['cajas', 'Cajas organizadoras', 15000, 'Cajas apilables para mantener tus artículos protegidos y ordenados entre los niveles.'],
-  ['bici', 'Soporte de bicicleta/ski', 20000, 'Soportes anclados al muro para aprovechar el espacio y despejar el suelo.'],
+  ['retiro_orden', 'Retiro y orden de artículos', 40000, 'Retiramos todo lo que tengas en el espacio y lo reordenamos una vez instaladas las repisas. Si no se contrata, el área debe estar despejada antes de la instalación.'],
+  ['retiro_basura', 'Retiro de basura', 30000, 'Nos llevamos muebles, cajas, escombros y todo lo que ya no necesites, para que no tengas que preocuparte de desecharlo.'],
+  ['cajas', 'Cajas organizadoras', 15000, 'Cajas plásticas apilables para mantener tus artículos protegidos y bien distribuidos entre los niveles.'],
+  ['bici', 'Soporte de bicicleta/ski', 20000, 'Soportes anclados al muro para que tus artículos deportivos ocupen menos espacio en el suelo.'],
+];
+const faq = [
+  ['¿Qué pasa si las medidas varían en terreno?', 'No hay problema: llevamos el material sobredimensionado para ajustarlo perfectamente a tu espacio al momento de instalar.'],
+  ['¿Las repisas son desmontables?', 'Sí. Si te cambias de domicilio puedes llevártelas contigo; te ayudamos con el proceso de desmontaje.'],
+  ['¿De qué material están hechas?', 'Terciado estructural de 18 mm (idéntico al de mueblería) y pino cepillado 2×2, pensado para resistir peso y humedad.'],
+  ['¿Cuánto demora la instalación?', 'En promedio, entre 1 y 2 horas dependiendo del tamaño del proyecto.'],
+  ['¿Necesitan conexión eléctrica?', 'No, trabajamos con herramientas inalámbricas.'],
+  ['¿Qué medios de pago aceptan?', 'Transferencia, débito o crédito. Emitimos boleta o factura según lo que necesites.'],
 ];
 function numeric(value, fallback = 0) {
   const n = value === undefined ? fallback : Number(value);
   if (!Number.isFinite(n) || n < 0 || n > 1e9) throw new Error('La cotización contiene un número inválido');
   return n;
+}
+function imageData(src, key) {
+  if (!src) return undefined;
+  if (typeof src !== 'string' || src.length > 8e6 || !/^data:image\/(png|jpeg);base64,/.test(src)) throw new Error(`Imagen ${key} inválida`);
+  return Buffer.from(src.split(',')[1], 'base64');
 }
 
 // Deterministic page geometry. No network, browser or office installation is required.
@@ -26,101 +41,145 @@ export async function generateQuotePdf(data, { now = new Date(), functionsDir = 
   if (rows.length > 100) throw new Error('Máximo 100 repisas por cotización');
   if (rows.some(r => r.kind === 'rack' && (!Number.isSafeInteger(r.valor) || r.valor <= 0))) throw new Error('Cada rack requiere un precio neto entero positivo');
   const extras = services.map(([key, title, price, description]) => ({ key, title, description, qty: numeric(data[`qty_${key}`]), price: numeric(data[`precio_${key}`], price) }));
-  const subtotal = rows.reduce((s,r) => s + r.unidades*r.valor, 0) + extras.reduce((s,r) => s+r.qty*r.price, 0);
+  const views = { isometric: imageData(data.grafica3d?.isometric, 'isometric'), top: imageData(data.grafica3d?.top, 'top') };
+  const subtotal = rows.reduce((s, r) => s + r.unidades * r.valor, 0) + extras.reduce((s, r) => s + r.qty * r.price, 0);
   const iva = Math.round(subtotal * .19), total = subtotal + iva;
-  const zip = await JSZip.loadAsync(readFileSync(join(functionsDir, 'cotizacion.xlsx')));
-  const asset = async name => zip.file(`xl/media/${name}`)?.async('nodebuffer');
-  const [logo, gallery, servicePhoto, boxes] = await Promise.all(['image1.png','image6.jpeg','image3.jpeg','image5.jpeg'].map(asset));
-  const doc = new PDFDocument({ size: 'A4', margin: 40, bufferPages: true, autoFirstPage: false, info: { Title: `Cotización ${data.cot_num || ''} - Don Maxi`, Author: 'Don Maxi' } });
-  // Reuse one embedded image resource for every crop, instead of duplicating JPEG bytes.
-  const galleryImage = doc.openImage(gallery);
-  const serviceImage = doc.openImage(servicePhoto);
+  const asset = name => readFileSync(join(functionsDir, 'quote-assets', name));
+  const logo = asset('logo.png');
+
+  const doc = new PDFDocument({ size: 'LETTER', margin: 0, bufferPages: true, autoFirstPage: false, info: { Title: `Cotización ${data.cot_num || ''} - Don Maxi`, Author: 'Don Maxi' } });
   const chunks = [];
-  const complete = new Promise((resolve,reject) => { doc.on('data',c=>chunks.push(c)); doc.on('end',()=>resolve(Buffer.concat(chunks))); doc.on('error',reject); });
-  const text = (value,x,y,w=515,size=10,color=C.ink,font='Helvetica') => doc.font(font).fontSize(size).fillColor(color).text(String(value ?? ''), x,y,{width:w,height:100,lineGap:3});
-  const rule = y => doc.moveTo(40,y).lineTo(555,y).strokeColor(C.line).lineWidth(.6).stroke();
-  const fit = (bytes,x,y,w,h) => { if(bytes) doc.image(bytes,x,y,{fit:[w,h],align:'center',valign:'center'}); };
-  function page(title, subtitle) {
-    doc.addPage(); doc.rect(0,0,595.28,841.89).fill(C.paper);
-    fit(logo,40,34,120,44); text(`COTIZACIÓN N.º ${data.cot_num || ''}`,390,47,165,9,C.muted,'Helvetica-Bold'); rule(92);
-    if(title) text(title,40,108,515,23,C.orange,'Times-Bold');
-    if(subtitle) text(subtitle,40,141,515,10,C.muted);
+  const complete = new Promise((resolve, reject) => { doc.on('data', c => chunks.push(c)); doc.on('end', () => resolve(Buffer.concat(chunks))); doc.on('error', reject); });
+  const text = (value, x, y, w, size, color = C.body, font = 'Helvetica', opts = {}) =>
+    doc.font(font).fontSize(size).fillColor(color).text(String(value ?? ''), x, y, { width: w, lineGap: 2, ...opts });
+  const label = (value, x, y, w = 200, color = C.muted, align = 'left') => text(value.toUpperCase(), x, y, w, 6.8, color, 'Helvetica-Bold', { characterSpacing: .8, align, lineBreak: false });
+  const rule = (y, x0 = L, x1 = R) => doc.moveTo(x0, y).lineTo(x1, y).strokeColor(C.line).lineWidth(.6).stroke();
+  const card = (x, y, w, h, fill = C.card, stroke = C.line) => doc.roundedRect(x, y, w, h, 7).fillAndStroke(fill, stroke);
+  const fit = (bytes, x, y, w, h) => doc.image(bytes, x, y, { fit: [w, h], align: 'center', valign: 'center' });
+  const footers = [];
+  function page(footer, title, subtitle) {
+    doc.addPage();
+    footers.push(footer);
+    if (title === undefined) return;
+    fit(logo, L, 28, 54, 22);
+    label(`Cotización N.º ${data.cot_num || ''}`, 330, 36, R - 330, C.muted, 'right');
+    rule(60);
+    if (title) text(title, L, 76, W, 18, C.brown, 'Times-Bold');
+    if (subtitle) text(subtitle, L, 101, W, 9, C.body);
   }
-  page();
-  const date = new Intl.DateTimeFormat('es-CL',{ timeZone:'America/Santiago' });
-  text(`Emitida ${date.format(now)} · Válida hasta ${date.format(new Date(now.getTime()+7*86400000))}`,280,73,275,8,C.muted);
-  for(const [i,[label,value]] of [['CLIENTE',data.nombre],['TELÉFONO',data.telefono],['DIRECCIÓN',data.direccion],['EMAIL',data.email]].entries()) {
-    const x=40+(i%2)*265,y=112+Math.floor(i/2)*59;
-    text(label,x,y,245,8,C.muted,'Helvetica-Bold'); text(value || '-',x,y+17,245,11);
+  const date = new Intl.DateTimeFormat('es-CL', { timeZone: 'America/Santiago', day: '2-digit', month: '2-digit', year: 'numeric' });
+  const time = new Intl.DateTimeFormat('es-CL', { timeZone: 'America/Santiago', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
+  // Page 1: header, drawings, client, items and payment.
+  page('Terciado estructural 18 mm y pino cepillado · Instalación sin conexión eléctrica · Ver servicios adicionales en pág. 2');
+  fit(logo, L, 27, 62, 24);
+  text(`Cotización N.º ${data.cot_num || ''}`, 330, 26, R - 330, 16, C.brown, 'Times-Bold', { align: 'right' });
+  text(`Emitida ${date.format(now)} · Válida hasta ${date.format(new Date(now.getTime() + 7 * 86400000))}`, 330, 46, R - 330, 7.5, C.muted, 'Helvetica', { align: 'right' });
+  doc.roundedRect(L, 60, W, 28, 6).fill(C.brown);
+  text('Repisas Don Maxi — N.º 1 en Google (5,0 estrellas · 231 reseñas)', L, 69, W, 9.8, '#FFFFFF', 'Helvetica-Bold', { align: 'center' });
+  // Drawings give up to 110 pt of height so a quote of about six rows still ends on page 1.
+  const tableHeight = rows.reduce((h, r) => h + 23.5 + (r.kind === 'rack' ? 13 : 0), 0) + extras.filter(r => r.qty > 0).length * 23.5;
+  const shrink = Math.min(110, Math.max(0, tableHeight - 47));
+  // The plan frame follows the plan's own proportions (a long bodega is narrow, a square one wide);
+  // the isometric frame takes the rest of a fixed 402 pt band.
+  const images = Object.fromEntries(Object.entries(views).map(([k, v]) => [k, v && doc.openImage(v)]));
+  const planW = Math.round(Math.min(200, Math.max(148, (images.top ? images.top.width / images.top.height : .5) * (270 - shrink) + 12)));
+  const isoW = 402 - planW - 16, isoX = 105;
+  for (const [key, title, x, w] of [['isometric', 'Vista isométrica', isoX, isoW], ['top', 'Planta y medidas', isoX + isoW + 16, planW]]) {
+    label(title, x, 100, w, C.muted, 'center');
+    card(x, 111, w, 282 - shrink, '#FFFFFF');
+    if (images[key]) fit(images[key], x + 6, 117, w - 12, 270 - shrink);
+    else text('Vista no disponible', x, 248 - shrink / 2, w, 9, C.faint, 'Helvetica', { align: 'center' });
   }
-  let y=243;
+  const client = [['Cliente', data.nombre, L, 118], ['Dirección', data.direccion, 170, 150], ['Teléfono', data.telefono, 330, 76], ['Correo', data.email, 414, R - 414]];
+  for (const [title, value, x, w] of client) {
+    label(title, x, 408 - shrink, w);
+    text(value || '-', x, 421 - shrink, w, 10.5, C.ink, 'Helvetica-Bold', { ellipsis: true, height: 26, lineGap: 0 });
+  }
+  // Column x positions; VALOR and TOTAL are right-aligned to their end.
+  const col = { largo: 52, prof: 150, alto: 226, niveles: 287, uds: 355, valorEnd: 483, totalEnd: 560 };
+  let y = 452 - shrink;
   function tableHeader() {
-    text(rows.some(r => r.kind === 'rack') ? 'Muebles' : 'Repisas',40,y,515,18,C.orange,'Times-Bold'); y+=30;
-    doc.rect(40,y-5,515,25).fill(C.box);
-    ['LARGO','PROFUND.','ALTO','NIVELES','UDS.','VALOR','TOTAL'].forEach((v,i)=>text(v,[46,118,191,252,320,377,465][i],y,80,8,C.muted,'Helvetica-Bold')); y+=28;
+    doc.roundedRect(L, y, W, 20, 5).fill(C.brown);
+    [['Largo', col.largo], ['Profund.', col.prof], ['Alto', col.alto], ['Niveles', col.niveles], ['Uds.', col.uds]].forEach(([t, x]) => label(t, x, y + 7, 70, C.head));
+    label('Valor neto', col.valorEnd - 80, y + 7, 80, C.head, 'right');
+    label('Total', col.totalEnd - 80, y + 7, 80, C.head, 'right');
+    y += 20;
+  }
+  function row(cells, value, units, heading) {
+    if (y > 640) { page('Terciado estructural 18 mm y pino cepillado · Instalación sin conexión eléctrica', 'Detalle (continuación)'); y = 120; tableHeader(); }
+    if (heading) { text(heading, col.largo, y + 7, 420, 8.6, C.ink, 'Helvetica-Bold'); y += 13; }
+    cells.forEach(([v, x]) => text(v, x, y + 7, 80, 9, C.ink, 'Helvetica', { lineBreak: false }));
+    text(money(value), col.valorEnd - 100, y + 7, 100, 9, C.ink, 'Helvetica', { align: 'right' });
+    text(money(value * units), col.totalEnd - 100, y + 7, 100, 9, C.ink, 'Helvetica-Bold', { align: 'right' });
+    y += 23.5; rule(y);
   }
   tableHeader();
-  for(const r of rows) {
-    if(y>640) { page('Muebles (continuación)'); y=166; tableHeader(); }
-    if(r.kind === 'rack') { text(`${r.label} · cajas incluidas`,46,y,500,10,C.ink,'Helvetica-Bold'); y+=20; }
-    [r.largo+' m',r.prof+' m',r.alto+' m',r.niveles,r.unidades,money(r.valor),money(r.valor*r.unidades)].forEach((v,i)=>text(v,[46,118,191,252,320,377,465][i],y,87,10));
-    y+=30;rule(y-8);
-  }
-  if(y>425) { page('Resumen de cotización'); y=167; }
-  y+=15;text('Servicios adicionales',40,y,515,17,C.orange,'Times-Bold');y+=29;
-  for(const r of extras) { text(r.title,46,y,280,10);text(r.qty,325,y,40);text(money(r.price),378,y,85);text(money(r.qty*r.price),465,y,90);y+=28; }
-  y+=17;rule(y);y+=16;
-  text('CONDICIONES DE COMPRA',40,y,285,8,C.muted,'Helvetica-Bold');
-  text('Puede abonar un 50% antes de la instalación, o pagar el total al finalizar el trabajo. Garantía de 5 años sobre estructura e instalación.',40,y+19,285,10);
-  [['Subtotal neto',subtotal],['IVA (19%)',iva],['TOTAL',total]].forEach(([label,value],i)=>{text(label,355,y+i*28,110,10,C.ink,i===2?'Helvetica-Bold':'Helvetica');text(money(value),465,y+i*28,90,11,C.ink,i===2?'Helvetica-Bold':'Helvetica');});
-  y+=110;
-  text('TRANSFERENCIA',40,y,235,8,C.muted,'Helvetica-Bold');
-  text('Don Maxi SPA\n77.386.684-8\nBanco BCI · Cta. Corriente 13702807\nrepisasdonmaxi@gmail.com',40,y+17,250,10);
-  text('MEDIOS DE PAGO',320,y,235,8,C.muted,'Helvetica-Bold');
-  text('Transferencia, débito o crédito hasta en 3 cuotas sin interés.',320,y+17,235,10);
-  // A payment link is included only when an explicit valid HTTPS URL is supplied.
-  if(data.payment_url && /^https:\/\//.test(data.payment_url)) doc.fontSize(10).fillColor(C.orange).text('Pagar cotización',320,y+65,{link:data.payment_url,underline:true});
+  for (const r of rows)
+    row([[metres(r.largo), col.largo], [metres(r.prof), col.prof], [metres(r.alto), col.alto], [r.niveles, col.niveles], [r.unidades, col.uds]], r.valor, r.unidades, r.kind === 'rack' ? `${r.label} · cajas incluidas` : undefined);
+  // Contracted services are part of the total, so they are listed with the items.
+  for (const r of extras.filter(r => r.qty > 0)) row([[r.title, col.largo], [r.qty, col.uds]], r.price, r.qty);
 
-  page('Simulación del proyecto','Referencia 3D. Las medidas finales se ajustan en terreno.');
-  const frames=[['isometric','VISTA ISOMÉTRICA',40,195,250,250*280/342],['top','PLANTA',305,195,250,250*280/342],['entrance','VISTA DESDE LA ENTRADA',40,439,515,515*420/704]];
-  for(const [key,label,x,fy,w,h] of frames) {
-    text(label,x,fy-20,w,8,C.muted,'Helvetica-Bold');doc.roundedRect(x,fy,w,h,7).fill(C.box);
-    const src=data.grafica3d?.[key];
-    if(src) {
-      if(typeof src!=='string' || src.length>8e6 || !/^data:image\/(png|jpeg);base64,/.test(src)) throw new Error(`Imagen ${key} inválida`);
-      fit(Buffer.from(src.split(',')[1],'base64'),x,fy,w,h);
-    } else text('Vista no disponible',x+15,fy+h/2-5,w-30,10,C.muted);
-  }
-  page('Servicios adicionales','Puedes sumarlos a tu cotización si los necesitas.');
-  extras.forEach((r,i)=>{const sy=185+i*140;doc.roundedRect(40,sy,515,125,8).fill(C.box);text(r.title,55,sy+18,290,14,C.orange,'Helvetica-Bold');text(r.description,55,sy+47,290,10);});
-  // Crop only the photo regions of the existing montage, keeping equal fixed frames.
-  for (const [sourceY, targetY] of [[15,200],[472,340],[929,620]]) {
-    const scale = 98 / 407;
-    doc.save().rect(425,targetY,98,98).clip();
-    doc.image(serviceImage,425-573*scale,targetY-sourceY*scale,{width:1080*scale});doc.restore();
-  }
-  doc.save().rect(417,480,120,98).clip();
-  doc.image(boxes,417-35*.24,480-200*.24,{width:1080*.24});doc.restore();
-  page('Galería de trabajos','Algunos proyectos que hemos instalado.');
-  const galleryRegions = [[65,162,306],[448,86,184],[708,162,306],[126,560,184],[387,285,306],[769,560,184],[65,759,306],[387,881,306],[708,758,306]];
-  galleryRegions.forEach(([sx,sy,size],i)=>{
-    const x=40+(i%3)*176,y=185+Math.floor(i/3)*181,side=163,scale=side/size;
-    doc.save().roundedRect(x,y,side,side,6).clip();
-    doc.image(galleryImage,x-sx*scale,y-sy*scale,{width:1080*scale});doc.restore();
+  if (y > 540) { page('Terciado estructural 18 mm y pino cepillado · Instalación sin conexión eléctrica', 'Resumen de cotización'); y = 110; }
+  y += 14;
+  card(L, y, 356, 62);
+  label('Condiciones', 60, y + 14);
+  text('Puede abonar un 50% antes de la instalación, o pagar el total al finalizar el trabajo. Garantía de 5 años sobre estructura e instalación.', 60, y + 28, 320, 8.6, C.body);
+  text('Subtotal', 412, y + 2, 80, 8.6, C.body); text(money(subtotal), 470, y + 2, 100, 8.6, C.body, 'Helvetica', { align: 'right' });
+  text('IVA (19%)', 412, y + 18, 80, 8.6, C.body); text(money(iva), 470, y + 18, 100, 8.6, C.body, 'Helvetica', { align: 'right' });
+  doc.roundedRect(412, y + 34, R - 412, 28, 6).fill(C.brown);
+  text('TOTAL', 424, y + 45, 60, 7.5, '#FFFFFF');
+  text(money(total), 460, y + 40, 100, 14, '#FFFFFF', 'Times-Bold', { align: 'right' });
+  y += 76;
+  // A date instead of "48 horas": the PDF is often read days after it is sent.
+  const limit = new Date(now.getTime() + 48 * 3600000), deadline = `${date.format(limit)} a las ${time.format(limit)}`;
+  doc.roundedRect(L, y, W, 30, 7).fillAndStroke(C.amber, C.amberLine);
+  text(`Acéptala dentro de 48 horas (hasta el ${deadline}) y obtén 10% de descuento adicional`, L, y + 10, W, 9, C.amberInk, 'Helvetica-Bold', { align: 'center' });
+  y += 42;
+  card(L, y, W, 68);
+  label('Transferencia', 60, y + 16);
+  text('Don Maxi SPA · 77.386.684-8\nBanco BCI Cta. Corriente 13702807\nrepisasdonmaxi@gmail.com', 60, y + 30, 250, 8.6, C.body);
+  doc.moveTo(305, y + 14).lineTo(305, y + 54).strokeColor(C.line).lineWidth(.6).stroke();
+  // A payment link is included only when an explicit valid HTTPS URL is supplied.
+  const payUrl = typeof data.payment_url === 'string' && /^https:\/\//.test(data.payment_url) ? data.payment_url : undefined;
+  label(payUrl ? 'Link de pago' : 'Otros medios de pago', 322, y + 16);
+  text('Débito o crédito, hasta 3 cuotas sin interés.', 322, y + 30, 230, 8.6, C.body);
+  if (payUrl) text('Pagar cotización »', 322, y + 46, 230, 9, C.ink, 'Helvetica-Bold', { link: payUrl, underline: true });
+
+  // Page 2: optional services, gross prices shown next to net.
+  page('Consulta disponibilidad de cada servicio según tu comuna', 'Servicios adicionales', 'Puedes sumarlos a tu cotización si los necesitas. Precio neto y total con IVA incluido.');
+  extras.forEach((r, i) => {
+    const cy = 125 + i * 150;
+    card(L, cy, W, 136);
+    text(r.title, 58, cy + 30, 240, 12.8, C.ink, 'Times-Bold');
+    text(`neto ${money(r.price)}`, 290, cy + 30, 100, 7.9, C.muted, 'Helvetica', { align: 'right' });
+    text(money(Math.round(r.price * 1.19)), 290, cy + 41, 100, 12.8, C.brown, 'Times-Bold', { align: 'right' });
+    text(r.description, 58, cy + 62, 330, 9, C.body);
+    doc.save().roundedRect(406, cy + 12, 150, 112, 6).clip();
+    doc.image(asset(`servicio-${r.key}.jpg`), 406, cy + 12, { cover: [150, 112], align: 'center', valign: 'center' });
+    doc.restore();
   });
-  doc.fontSize(10).fillColor(C.orange).text('Ver portafolio completo: www.donmaxi.cl/galeria',40,761,{link:'https://www.donmaxi.cl/galeria'});
-  page('Preguntas frecuentes');
-  const faq=[
-    ['¿Qué pasa si las medidas varían en terreno?','Llevamos el material sobredimensionado para ajustarlo a tu espacio al momento de instalar.'],
-    ['¿Las repisas son desmontables?','Sí. Si te cambias de domicilio puedes llevártelas; te ayudamos con el desmontaje.'],
-    ['¿De qué material están hechas?','Terciado estructural de 18 mm y pino cepillado 2×2.'],
-    ['¿Cuánto demora la instalación?','En promedio, entre 1 y 2 horas, dependiendo del tamaño del proyecto.'],
-    ['¿Necesitan conexión eléctrica?','No, trabajamos con herramientas inalámbricas.'],
-    ['¿Qué medios de pago aceptan?','Transferencia, débito o crédito. Emitimos boleta o factura según lo que necesites.'],
-  ];
-  faq.forEach(([q,a],i)=>{const fy=175+i*94;text(q,40,fy,515,13,C.ink,'Helvetica-Bold');text(a,40,fy+26,515,11);});
-  const count=doc.bufferedPageRange().count;
-  for(let i=0;i<count;i++){doc.switchToPage(i);rule(790);text('Don Maxi · Optimiza tu espacio',40,802,400,8,C.muted);text(`${i+1} de ${count}`,505,802,50,8,C.muted);}
+
+  // Page 3: gallery.
+  page('Terciado estructural 18 mm y pino cepillado 2×2', 'Galería de trabajos', 'Algunos proyectos que hemos instalado.');
+  text('Ver portafolio completo » www.donmaxi.cl/galeria', 300, 103, R - 300, 9, C.brown, 'Helvetica-Bold', { align: 'right', link: 'https://www.donmaxi.cl/galeria' });
+  fit(asset('galeria.jpg'), L, 130, W, 600);
+
+  // Page 4: FAQ.
+  page('¿Otra duda? Escríbenos por WhatsApp', 'Preguntas frecuentes');
+  y = 112;
+  for (const [q, a] of faq) {
+    text(q, L, y, W, 10.5, C.ink, 'Times-Bold');
+    text(a, L, y + 17, W, 9, C.body);
+    y = doc.y + 12; rule(y); y += 12;
+  }
+
+  const count = doc.bufferedPageRange().count;
+  for (let i = 0; i < count; i++) {
+    doc.switchToPage(i); rule(FOOT);
+    text(footers[i], L, FOOT + 9, 460, 7.9, C.faint, 'Helvetica', { lineBreak: false });
+    text(`${i + 1} de ${count}`, 500, FOOT + 9, R - 500, 7.9, C.faint, 'Helvetica', { align: 'right', lineBreak: false });
+  }
   doc.end();
   return { bytes: await complete, subtotal, iva, total };
 }

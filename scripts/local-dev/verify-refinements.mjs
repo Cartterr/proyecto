@@ -46,8 +46,8 @@ try {
   await f.getByRole('button',{name:'Plano 2D',exact:true}).click();
   await f.getByRole('button',{name:'Seleccionar',exact:true}).click();
   await f.locator('.editor-run[data-run-id="A"] .editor-run-hit-area').click({force:true});
-  await f.getByLabel('Rack con cajas',{exact:true}).check();
-  await expect(f.getByLabel('Rack con cajas',{exact:true})).toBeChecked();
+  await f.getByLabel('Cajas sueltas sobre repisa',{exact:true}).check();
+  await expect(f.getByLabel('Cajas sueltas sobre repisa',{exact:true})).toBeChecked();
   await f.getByRole('button',{name:'3D directo',exact:true}).click();
   await expect(f.locator('canvas').first()).toBeVisible();
   await expect.poll(async()=>f.locator('canvas').first().evaluate(c=>c.toDataURL().length)).toBeGreaterThan(10000);

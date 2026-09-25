@@ -37,7 +37,7 @@
   external_node_modules = ["googleapis", "pdfkit"]
 
 [functions.generate-quote]
-  included_files = ["netlify/functions/cotizacion.xlsx"]
+  included_files = ["netlify/functions/quote-assets/*"]
 
 [functions.send-reminders]
   schedule = "0 13 * * *"

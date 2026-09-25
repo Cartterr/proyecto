@@ -312,16 +312,18 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
 
   const cliente = mode === 'visita' ? (selectedVisit || {}) : manualCliente
 
-  // Medida de cada recuadro de la hoja Grafica3D, al doble para que no se vea pixelada.
-  // Se piden con estas proporciones para que entren sin deformarse.
+  // Recuadros verticales de la pagina 1 del PDF (diseño de Maxi, 25-09), al triple para que no
+  // se vea pixelada. Se piden con estas proporciones para que entren sin deformarse.
+  // La planta se pide con la proporcion del recinto: el PDF ajusta su recuadro a esa imagen.
+  const recinto = project3d?.room
+  const proporcionPlanta = recinto ? Math.min(.88, Math.max(.5, recinto.backWallCm / Math.min(recinto.leftWallCm, recinto.rightWallCm))) : .55
   const VISTAS_PDF = [
-    { view: 'isometric', width: 1026, height: 840 },
-    { view: 'top', width: 1026, height: 840 },
-    { view: 'entrance', width: 2112, height: 1260 },
+    { view: 'isometric', width: 642, height: 810 },
+    { view: 'top', width: Math.round(810 * proporcionPlanta), height: 810 },
   ]
 
-  // Le pide al visor las tres vistas que van en la pagina 2, cada una por separado: en la
-  // plantilla van en recuadros distintos y con su titulo en una celda, no dentro de la imagen.
+  // Le pide al visor las dos vistas de la pagina 1, cada una por separado: van en recuadros
+  // distintos y con su titulo fuera de la imagen.
   function pedirGrafica3d() {
     const frame = frame3dRef.current
     if (!project3d || !frame?.contentWindow) return Promise.resolve(null)

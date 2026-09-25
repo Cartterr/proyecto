@@ -8,8 +8,8 @@
 - La confirmación identifica alto, profundidad total y rango de largos. La API relee la tabla, rechaza rangos ambiguos o precios previamente modificados y verifica la celda después de escribir.
 - La profundidad comercial incluye los dos pilares: 48 cm corresponden a 40 cm útiles en la tabla.
 - No se escriben precios cuando la tabla remota no está disponible. Las cotizaciones guardadas no se recalculan.
-- El PDF usa una plantilla programada de cinco páginas: cotización, simulación, servicios, galería y preguntas frecuentes. Cotizaciones extensas agregan páginas de detalle; ninguna fila desaparece por superar las cuatro originales.
-- Los tres recuadros de simulación conservan las proporciones 342×280, 342×280 y 704×420. Se exportan a triple resolución. Las fotos comerciales existentes se reutilizan desde el XLSX original, sin reemplazarlo.
+- El PDF sigue el diseño de Maxi del 25-09 (tamaño carta, cuatro páginas): cotización con vista isométrica y planta, servicios adicionales con precio neto y con IVA, galería y preguntas frecuentes. Los servicios contratados aparecen como filas de la cotización. Las vistas se achican hasta 110 pt para que unas seis filas quepan en la página 1; cotizaciones más largas agregan páginas de detalle y ninguna fila desaparece.
+- Las dos vistas son verticales, 214×270 y 148×270 pt, y se exportan a triple resolución. Logo y fotos viven en `netlify/functions/quote-assets/`, tomados del PDF de Maxi.
 - La generación de PDF se ejecuta en Node, sin subir libros temporales a Drive. El guardado posterior de la cotización conserva su flujo existente.
 - Si falla una vista del proyecto, se pide reintentar antes de emitir el PDF; no se entrega silenciosamente una cotización incompleta.
 - El plano se conserva junto al borrador local al alternar entre móvil y escritorio. Reiniciar borra el plano; los servicios adicionales se desplazan dentro de su tarjeta sin ensanchar toda la página.

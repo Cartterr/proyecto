@@ -9,24 +9,30 @@ test('rack description and own price appear in PDF; missing rack price is reject
   assert.ok((await pdf(result.bytes)).text.includes('Rack 6 cajas'));
   await assert.rejects(()=>generateQuotePdf({repisas:[{...rack,valor:0}]}),/precio neto/);
 });
-test('five pages, correct net/VAT totals and no placeholder photos',async()=>{
+test('four pages, correct net/VAT totals and no placeholder photos',async()=>{
   const result=await generateQuotePdf({cot_num:1443,nombre:'CLIENTE PRUEBA',repisas:[{largo:2.4,prof:.48,alto:2,niveles:4,unidades:1,valor:110000},{largo:.72,prof:.68,alto:2,niveles:4,unidades:1,valor:70000}]});
   assert.equal(result.total,214200);
   const parsed=await pdf(result.bytes);
-  assert.equal(parsed.numpages,5);
-  for(const text of ['CLIENTE PRUEBA','214.200','Simulación del proyecto','Galería de trabajos','Preguntas frecuentes']) assert.ok(parsed.text.includes(text),text);
+  assert.equal(parsed.numpages,4);
+  for(const text of ['CLIENTE PRUEBA','214.200','Servicios adicionales','Galería de trabajos','Preguntas frecuentes']) assert.ok(parsed.text.includes(text),text);
   assert.ok(!parsed.text.includes('Sube aquí'));
 });
 test('all rows contribute to totals and long quotes paginate',async()=>{
   const repisas=Array.from({length:30},()=>({largo:1,prof:.48,alto:2,niveles:4,unidades:2,valor:50000}));
   const result=await generateQuotePdf({repisas});
   assert.equal(result.subtotal,3000000);
-  assert.ok((await pdf(result.bytes)).numpages>5);
+  assert.ok((await pdf(result.bytes)).numpages>4);
 });
-test('five rows move the summary to a new page before payment details can overlap the footer',async()=>{
-  const repisas=Array.from({length:5},()=>({largo:1,prof:.48,alto:2,niveles:4,unidades:1,valor:50000}));
-  const result=await generateQuotePdf({repisas});
-  assert.equal((await pdf(result.bytes)).numpages,6);
+test('six rows still fit on page 1; eight move the summary to its own page',async()=>{
+  const repisas=n=>Array.from({length:n},()=>({largo:1,prof:.48,alto:2,niveles:4,unidades:1,valor:50000}));
+  assert.equal((await pdf((await generateQuotePdf({repisas:repisas(6)})).bytes)).numpages,4);
+  assert.equal((await pdf((await generateQuotePdf({repisas:repisas(8)})).bytes)).numpages,5);
+});
+test('contracted services are listed and charged on page 1',async()=>{
+  const result=await generateQuotePdf({repisas:[{largo:1,prof:.48,alto:2,niveles:4,unidades:1,valor:50000}],qty_retiro_basura:2});
+  assert.equal(result.subtotal,110000);
+  const firstPage=(await pdf(result.bytes)).text.split('Servicios adicionales')[0];
+  assert.ok(firstPage.includes('Retiro de basura'));
 });
 test('rejects invalid figures and malformed image data',async()=>{
   await assert.rejects(()=>generateQuotePdf({repisas:[{valor:-10}]}));
