@@ -312,14 +312,14 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
 
   const cliente = mode === 'visita' ? (selectedVisit || {}) : manualCliente
 
-  // Recuadros verticales de la pagina 1 del PDF (diseño de Maxi, 25-09), al triple para que no
-  // se vea pixelada. Se piden con estas proporciones para que entren sin deformarse.
+  // Recuadros verticales de la pagina 1 del PDF (diseño de Maxi, 25-09), a la resolucion que pide
+  // su README (~860 x 1080 la isometrica). Se piden con estas proporciones para que entren sin deformarse.
   // La planta se pide con la proporcion del recinto: el PDF ajusta su recuadro a esa imagen.
   const recinto = project3d?.room
   const proporcionPlanta = recinto ? Math.min(.88, Math.max(.5, recinto.backWallCm / Math.min(recinto.leftWallCm, recinto.rightWallCm))) : .55
   const VISTAS_PDF = [
-    { view: 'isometric', width: 642, height: 810 },
-    { view: 'top', width: Math.round(810 * proporcionPlanta), height: 810 },
+    { view: 'isometric', width: 860, height: 1080 },
+    { view: 'top', width: Math.round(1080 * proporcionPlanta), height: 1080 },
   ]
 
   // Le pide al visor las dos vistas de la pagina 1, cada una por separado: van en recuadros
@@ -366,11 +366,12 @@ export default function PorCotizarSection({ statuses, visitaSeleccionada, allVis
 
     const payload = {
       cot_num:   cotNum,
-      nombre:    (cliente.nombre || '').toUpperCase(),
-      direccion: (cliente.direccion || '').toUpperCase(),
+      // Tal como se escribieron: el diseño de Maxi muestra los datos del cliente sin mayusculas forzadas.
+      nombre:    cliente.nombre || '',
+      direccion: cliente.direccion || '',
       rut: '',
       telefono:  cliente.celular || cliente.telefono || '',
-      email:     (cliente.email || '').toUpperCase(),
+      email:     cliente.email || '',
       repisas:   repisas.map(productoCotizacion),
       ...adicionales,
       ...(grafica3d ? { grafica3d } : {}),

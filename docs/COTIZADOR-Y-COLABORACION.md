@@ -25,7 +25,7 @@
 | Validación de rango y precio previo | `netlify/functions/lib/price-update.mjs` |
 | Tabla de respaldo y búsqueda de rangos | `src/admin/preciosRepisas.js` |
 
-Las posiciones del PDF están en puntos de impresión; los tamaños solicitados al visor están en píxeles. Mantener las proporciones evita deformaciones. El botón de pago solo aparece si se proporciona una URL HTTPS válida en `payment_url`; no se inventa un enlace de cobro.
+Las posiciones del PDF están en puntos de impresión; los tamaños solicitados al visor están en píxeles. Mantener las proporciones evita deformaciones. El PDF sigue la entrega de Maxi (`cotizador.zip`, 25-09): mismas posiciones, textos, colores y fuentes Lora/Poppins (licencia SIL OFL, en `netlify/functions/quote-assets/fonts`). El botón "Pagar cotización" usa el link de Mercado Pago de Don Maxi, salvo que `payment_url` traiga otra URL HTTPS válida.
 
 ## Entorno local nativo
 
