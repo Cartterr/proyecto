@@ -39,6 +39,9 @@
 # Los externos del bloque [functions] se copian en TODAS las funciones; pdfkit
 # solo lo usa generate-quote y agregarlo arriba deja a read-pdf-quote sobre los
 # 250 MB descomprimidos que acepta AWS Lambda.
+# ponytail: googleapis completo (~207 MB) va en cada función; generate-quote queda
+# en ~247 MB. Si otra dependencia la empuja al límite, cambiar googleapis por
+# @googleapis/sheets, @googleapis/drive y @googleapis/calendar.
 [functions.generate-quote]
   external_node_modules = ["pdfkit"]
   included_files = ["netlify/functions/quote-assets/**"]
