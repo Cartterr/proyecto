@@ -12,3 +12,7 @@ dist
 Thumbs.db
 
 .env
+output/
+tmp/
+scripts/local-dev/data.json
+scripts/local-dev/pdfs/

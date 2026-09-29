@@ -4,32 +4,19 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { buildCatalog } from './catalog.mjs'
 import { SEED_VISITS, SEED_QUOTES, SEED_INSTALLATIONS, visitToApiShape } from './seed.mjs'
+import { TABLA_PRECIOS } from '../../src/admin/preciosRepisas.js'
+import { resolvePriceUpdate } from '../../netlify/functions/lib/price-update.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const DATA_FILE = path.join(here, 'data.json')
 const PORT = Number(process.env.LOCAL_API_PORT || 8899)
 const PUBLIC_URL = process.env.LOCAL_PUBLIC_URL || 'http://127.0.0.1:5176'
 
-// La tabla de precios sí vive en Google, así que necesitamos esas credenciales tambien en
-// local. Se copian SOLO estas claves del .env de produccion: nada de Twilio, Netlify ni la
-// clave de admin real, y el resto del entorno local queda como esta.
-const CLAVES_GOOGLE = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET', 'GOOGLE_REFRESH_TOKEN', 'PRECIOS_SHEET_ID']
-const ENV_FILE = process.env.LOCAL_ENV_FILE || path.join(here, '../../.env')
-if (fs.existsSync(ENV_FILE)) {
-  for (const linea of fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/)) {
-    const i = linea.indexOf('=')
-    if (i < 1 || linea.trimStart().startsWith('#')) continue
-    const clave = linea.slice(0, i).trim()
-    if (CLAVES_GOOGLE.includes(clave) && !process.env[clave]) {
-      process.env[clave] = linea.slice(i + 1).trim().replace(/^["']|["']$/g, '')
-    }
-  }
-}
-// Planilla que publico el cliente el 17-09-2026. En produccion va como variable de entorno.
-process.env.PRECIOS_SHEET_ID = process.env.PRECIOS_SHEET_ID || '1wi6Fs3-RrK_lhobuut8rKCFBkEbVA1vBXvRRfFDB2Ws'
+// Prices, visits and PDFs are local. Do not load production Google credentials.
 // generate-quote busca la plantilla en LAMBDA_TASK_ROOT/netlify/functions; en local es el repo.
 process.env.LAMBDA_TASK_ROOT = process.env.LAMBDA_TASK_ROOT || path.join(here, '../..')
 
@@ -56,6 +43,7 @@ function loadData() {
 function saveData(data) { fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2)) }
 
 let db = loadData()
+db.precios ||= structuredClone(TABLA_PRECIOS)
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -77,6 +65,21 @@ async function getQuoteHandler() {
 }
 
 const routes = {
+  'upload-pdf': body => {
+    const bytes = Buffer.from(body.pdfBase64 || '', 'base64')
+    if (bytes.subarray(0, 4).toString() !== '%PDF') throw Object.assign(new Error('PDF inválido'), { status: 400 })
+    const id = randomUUID()
+    fs.mkdirSync(path.join(here, 'pdfs'), { recursive: true })
+    fs.writeFileSync(path.join(here, 'pdfs', `${id}.pdf`), bytes)
+    return { ok: true, local: true, viewUrl: `${PUBLIC_URL}/.netlify/functions/local-pdf?id=${id}` }
+  },
+  'get-precios': () => ({ ok: true, tabla: db.precios, local: true }),
+  'update-precio': body => {
+    const updated = resolvePriceUpdate(db.precios, body)
+    db.precios = db.precios.map(r => r.alto === updated.alto && r.prof === updated.prof && r.desde === updated.desde && r.hasta === updated.hasta ? updated : r)
+    saveData(db)
+    return { ok: true, fila: updated, local: true }
+  },
   'get-visits': () => ({
     ok: true,
     visits: db.visits.map(v => ({ ...v, status: db.visitStatuses[v.id] || v.status || 'agendada' })),
@@ -116,6 +119,16 @@ const server = http.createServer(async (req, res) => {
   const name = url.pathname.replace('/.netlify/functions/', '')
   if (!url.pathname.startsWith('/.netlify/functions/')) return send(res, 404, { error: 'Ruta local no encontrada' })
 
+  // Loopback-only mock downloads; random identifiers, no production or cloud storage.
+  if (name === 'local-pdf' && req.method === 'GET') {
+    const id = url.searchParams.get('id') || ''
+    if (!/^[a-f0-9-]{36}$/.test(id)) return send(res, 400, { error: 'ID inválido' })
+    const file = path.join(here, 'pdfs', `${id}.pdf`)
+    if (!fs.existsSync(file)) return send(res, 404, { error: 'PDF no encontrado' })
+    res.writeHead(200, { 'Content-Type': 'application/pdf' })
+    return res.end(fs.readFileSync(file))
+  }
+
   if (req.headers['x-admin-password'] !== ADMIN_PASSWORD) return send(res, 401, { error: 'No autorizado' })
 
   const chunks = []
@@ -125,7 +138,6 @@ const server = http.createServer(async (req, res) => {
   try {
     // Estas rutas corren el handler real de la PR / de produccion, no una version local.
     const handlerReal = name === 'repisas-3d-quote' ? await getQuoteHandler()
-      : name === 'get-precios' ? (await import('../../netlify/functions/get-precios.mjs')).handler
       : name === 'generate-quote' ? (await import('../../netlify/functions/generate-quote.mjs')).handler
       : null
     if (handlerReal) {
@@ -140,12 +152,13 @@ const server = http.createServer(async (req, res) => {
     }
 
     const route = routes[name]
-    if (!route) return send(res, 200, { ok: true, note: `Sin backend local para ${name}` })
+    if (!route) return send(res, 404, { ok: false, error: `Sin backend local para ${name}` })
+    if (name === 'update-precio' && req.method !== 'POST') return send(res, 405, { error: 'Método no permitido' })
     const body = raw ? JSON.parse(raw) : {}
     return send(res, 200, route(body))
   } catch (error) {
     console.error(`[local-api] ${name} failed:`, error)
-    return send(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+    return send(res, error.status || 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
   }
 })
 

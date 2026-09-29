@@ -75,6 +75,7 @@ export default function CotizacionesSection() {
   }
 
   async function saveEdit(quote) {
+    if (editRepisas.some(r => r.kind === 'rack' && (!Number.isSafeInteger(r.valor) || r.valor <= 0))) return alert('Ingresa un precio neto entero positivo para cada rack.')
     setSaving(true)
     try {
       await apiFetch('/.netlify/functions/save-quote', {
@@ -186,11 +187,13 @@ export default function CotizacionesSection() {
                   <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: 'uppercase', marginBottom: 8, letterSpacing: 1 }}>Repisas</div>
                   {editRepisas.map((r, i) => (
                     <div key={r.id} style={{ display: 'grid', gridTemplateColumns: 'repeat(6,1fr)', gap: 6, marginBottom: 8 }}>
+                      {r.kind === 'rack' && <strong style={{gridColumn:'1 / -1',fontSize:12}}>{r.label} · cajas incluidas · medidas fijas</strong>}
                       {['largo','prof','alto','niveles','unidades','valor'].map(field => (
                         <div key={field}>
                           <div style={{ fontSize: 10, color: C.textMuted, marginBottom: 2, textTransform: 'uppercase' }}>{field}</div>
                           <input
                             type="number"
+                            readOnly={r.kind === 'rack' && field !== 'valor'}
                             value={r[field] ?? r[field[0]] ?? 0}
                             style={{ ...styles.input, padding: '5px 6px', fontSize: 12 }}
                             onChange={e => setEditRepisas(prev => prev.map((x, j) => j === i ? { ...x, [field]: parseFloat(e.target.value) || 0 } : x))}

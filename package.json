@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "test": "node --test src/admin/preciosRepisas.test.js",
+    "test": "node --test src/admin/*.test.js netlify/functions/lib/*.test.mjs",
     "build": "vite build",
     "preview": "vite preview",
     "netlify:dev": "netlify dev",
@@ -14,12 +14,13 @@
   },
   "dependencies": {
     "googleapis": "^173.0.0",
-    "jszip": "^3.10.1",
     "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.20.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@vitejs/plugin-react": "^6.0.2",
     "vite": "^8.0.16"
   }
