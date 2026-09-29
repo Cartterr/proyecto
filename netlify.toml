@@ -34,9 +34,13 @@
 
 [functions]
   node_bundler = "esbuild"
-  external_node_modules = ["googleapis", "pdfkit"]
+  external_node_modules = ["googleapis"]
 
+# Los externos del bloque [functions] se copian en TODAS las funciones; pdfkit
+# solo lo usa generate-quote y agregarlo arriba deja a read-pdf-quote sobre los
+# 250 MB descomprimidos que acepta AWS Lambda.
 [functions.generate-quote]
+  external_node_modules = ["pdfkit"]
   included_files = ["netlify/functions/quote-assets/**"]
 
 [functions.send-reminders]
